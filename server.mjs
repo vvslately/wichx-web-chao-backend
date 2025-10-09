@@ -767,7 +767,7 @@ app.get('/get-web-config', async (req, res) => {
     });
   }
 });
-ฟ
+
 // Update web config endpoint (excluding theme)
 app.put('/update-web-config', authenticateToken, requirePermission('can_manage_settings'), async (req, res) => {
   try {
