@@ -37,7 +37,7 @@ app.use(cors({
     }
 
     // อนุญาตทุก subdomain ของ vhouse.online
-    if (/\.vhouse\.online$/.test(origin) || origin === 'https://vhouse.online') {
+    if (/\.vhouse\.online$/.test(origin) || origin === 'https://okzc.xyz') {
       return callback(null, true);
     }
 
@@ -80,7 +80,7 @@ const multiTenantMiddleware = async (req, res, next) => {
     // If no custom header, try to extract from origin header
     if (!subdomain) {
       const origin = req.get('origin') || '';
-      if (origin.includes('vhouse.online')) {
+      if (origin.includes('okzc.xyz')) {
         // Extract subdomain from origin: https://subdomain.vhouse.online
         const originMatch = origin.match(/https?:\/\/([^.]+)\.vhouse\.online/);
         if (originMatch) {
@@ -95,7 +95,7 @@ const multiTenantMiddleware = async (req, res, next) => {
     }
     
     // Skip multi-tenant for main domain
-    if (host === 'vhouse.online' || !subdomain || subdomain === 'www') {
+    if (host === 'okzc.xyz' || !subdomain || subdomain === 'www') {
       req.customer_id = null;
       req.website_name = null;
       return next();
