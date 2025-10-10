@@ -36,8 +36,8 @@ app.use(cors({
       return callback(null, true);
     }
 
-    // อนุญาตทุก subdomain ของ vhouse.online
-    if (/\.vhouse\.online$/.test(origin) || origin === 'https://okzc.xyz') {
+    // อนุญาตทุก subdomain ของ okzc.xyz
+    if (/\.okzc\.xyz$/.test(origin) || origin === 'https://okzc.xyz') {
       return callback(null, true);
     }
 
@@ -81,8 +81,8 @@ const multiTenantMiddleware = async (req, res, next) => {
     if (!subdomain) {
       const origin = req.get('origin') || '';
       if (origin.includes('okzc.xyz')) {
-        // Extract subdomain from origin: https://subdomain.vhouse.online
-        const originMatch = origin.match(/https?:\/\/([^.]+)\.vhouse\.online/);
+        // Extract subdomain from origin: https://subdomain.okzc.xyz
+        const originMatch = origin.match(/https?:\/\/([^.]+)\.okzc\.xyz/);
         if (originMatch) {
           subdomain = originMatch[1];
         }
