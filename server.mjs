@@ -303,26 +303,49 @@ app.post('/signup', async (req, res) => {
       });
     }
 
-    const { fullname, email, password } = req.body;
+    const { fullname, password, pin_code } = req.body;
 
     // Validate required fields
-    if (!fullname || !email || !password) {
+    if (!fullname || !password || !pin_code) {
       return res.status(400).json({
         success: false,
-        message: 'Fullname, email, and password are required'
+        message: 'Fullname, password, and pin_code are required'
+      });
+    }
+
+    // Check customer status before signup
+    const [sites] = await pool.execute(
+      'SELECT status FROM auth_sites WHERE customer_id = ?',
+      [req.customer_id]
+    );
+
+    if (sites.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Customer not found',
+        status: 'customer_not_found'
+      });
+    }
+
+    const customerStatus = sites[0].status;
+    if (customerStatus === 'suspended') {
+      return res.status(403).json({
+        success: false,
+        message: 'Account suspended',
+        status: 'suspended'
       });
     }
 
     // Check if user already exists for this customer
     const [existingUsers] = await pool.execute(
-      'SELECT id FROM users WHERE email = ? AND customer_id = ?',
-      [email, req.customer_id]
+      'SELECT id FROM users WHERE fullname = ? AND customer_id = ?',
+      [fullname, req.customer_id]
     );
 
     if (existingUsers.length > 0) {
       return res.status(409).json({
         success: false,
-        message: 'User with this email already exists'
+        message: 'User with this fullname already exists'
       });
     }
 
@@ -330,17 +353,19 @@ app.post('/signup', async (req, res) => {
     const saltRounds = 10;
     const hashedPassword = await bcrypt.hash(password, saltRounds);
 
+    // Generate a dummy email for compatibility with existing schema
+    const dummyEmail = `user_${Date.now()}@${req.customer_id}.local`;
+
     // Insert new user with customer_id
     const [result] = await pool.execute(
-      'INSERT INTO users (customer_id, fullname, email, password) VALUES (?, ?, ?, ?)',
-      [req.customer_id, fullname, email, hashedPassword]
+      'INSERT INTO users (customer_id, fullname, email, password, pin_code) VALUES (?, ?, ?, ?, ?)',
+      [req.customer_id, fullname, dummyEmail, hashedPassword, pin_code]
     );
 
     // Generate JWT token
     const token = jwt.sign(
       { 
         id: result.insertId, 
-        email: email,
         fullname: fullname,
         customer_id: req.customer_id
       },
@@ -352,10 +377,10 @@ app.post('/signup', async (req, res) => {
       success: true,
       message: 'User created successfully',
       token: token,
+      status: 'active',
       user: {
         id: result.insertId,
-        fullname: fullname,
-        email: email
+        fullname: fullname
       }
     });
 
@@ -380,26 +405,49 @@ app.post('/login', async (req, res) => {
       });
     }
 
-    const { email, password } = req.body;
+    const { fullname, password } = req.body;
 
     // Validate required fields
-    if (!email || !password) {
+    if (!fullname || !password) {
       return res.status(400).json({
         success: false,
-        message: 'Email and password are required'
+        message: 'Fullname and password are required'
       });
     }
 
-    // Find user by email and customer_id
+    // Check customer status before login
+    const [sites] = await pool.execute(
+      'SELECT status FROM auth_sites WHERE customer_id = ?',
+      [req.customer_id]
+    );
+
+    if (sites.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Customer not found',
+        status: 'customer_not_found'
+      });
+    }
+
+    const customerStatus = sites[0].status;
+    if (customerStatus === 'suspended') {
+      return res.status(403).json({
+        success: false,
+        message: 'Account suspended',
+        status: 'suspended'
+      });
+    }
+
+    // Find user by fullname and customer_id
     const [users] = await pool.execute(
-      'SELECT id, fullname, email, password, money, points, role FROM users WHERE email = ? AND customer_id = ?',
-      [email, req.customer_id]
+      'SELECT id, fullname, password, money, points, role FROM users WHERE fullname = ? AND customer_id = ?',
+      [fullname, req.customer_id]
     );
 
     if (users.length === 0) {
       return res.status(401).json({
         success: false,
-        message: 'Invalid email or password'
+        message: 'Invalid fullname or password'
       });
     }
 
@@ -411,7 +459,7 @@ app.post('/login', async (req, res) => {
     if (!isValidPassword) {
       return res.status(401).json({
         success: false,
-        message: 'Invalid email or password'
+        message: 'Invalid fullname or password'
       });
     }
 
@@ -419,7 +467,6 @@ app.post('/login', async (req, res) => {
     const token = jwt.sign(
       { 
         id: user.id, 
-        email: user.email,
         fullname: user.fullname,
         customer_id: req.customer_id
       },
@@ -431,10 +478,10 @@ app.post('/login', async (req, res) => {
       success: true,
       message: 'Login successful',
       token: token,
+      status: 'active',
       user: {
         id: user.id,
         fullname: user.fullname,
-        email: user.email,
         money: user.money,
         points: user.points,
         role: user.role
@@ -2144,9 +2191,9 @@ app.get('/check-customer-status', async (req, res) => {
       });
     }
 
-    // Get customer info and expired day from auth_sites table
+    // Get customer info and status from auth_sites table
     const [sites] = await pool.execute(
-      'SELECT customer_id, website_name, expiredDay FROM auth_sites WHERE customer_id = ? ORDER BY id ASC LIMIT 1',
+      'SELECT customer_id, website_name, expiredDay, status FROM auth_sites WHERE customer_id = ? ORDER BY id ASC LIMIT 1',
       [req.customer_id]
     );
 
@@ -2159,37 +2206,17 @@ app.get('/check-customer-status', async (req, res) => {
     }
 
     const site = sites[0];
-    const expiredDay = new Date(site.expiredDay);
     const currentDate = new Date();
     
-    // Reset time to compare only dates
-    currentDate.setHours(0, 0, 0, 0);
-    expiredDay.setHours(0, 0, 0, 0);
-
-    // Check if expired
-    if (currentDate > expiredDay) {
-      return res.json({
-        success: true,
-        message: 'หมดอายุ',
-        status: 'expired',
-        customer_id: req.customer_id,
-        website_name: site.website_name,
-        expiredDay: site.expiredDay,
-        currentDate: currentDate.toISOString().split('T')[0],
-        expiredDate: expiredDay.toISOString().split('T')[0]
-      });
-    }
-
-    // Still valid
+    // Return status directly from database
     return res.json({
       success: true,
-      message: 'ยังไม่หมดอายุ',
-      status: 'active',
+      message: site.status === 'active' ? 'ยังไม่หมดอายุ' : 'หมดอายุ',
+      status: site.status,
       customer_id: req.customer_id,
       website_name: site.website_name,
       expiredDay: site.expiredDay,
-      currentDate: currentDate.toISOString().split('T')[0],
-      expiredDate: expiredDay.toISOString().split('T')[0]
+      currentDate: currentDate.toISOString().split('T')[0]
     });
 
   } catch (error) {
