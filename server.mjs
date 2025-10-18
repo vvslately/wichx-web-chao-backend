@@ -6278,6 +6278,328 @@ app.post('/api/slip', authenticateToken, async (req, res) => {
   }
 });
 
+// ==================== PRODUCT CLAIMS SYSTEM ====================
+
+// Create a new product claim
+app.post('/api/product-claims', authenticateToken, async (req, res) => {
+  try {
+    const { transaction_id, product_id, claim_reason } = req.body;
+    
+    if (!transaction_id || !product_id || !claim_reason) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+    
+    // Verify transaction exists and belongs to user
+    const [transactions] = await pool.execute(
+      'SELECT * FROM transactions WHERE id = ? AND user_id = ? AND customer_id = ?',
+      [transaction_id, req.user.id, req.customer_id]
+    );
+    
+    if (transactions.length === 0) {
+      return res.status(404).json({ error: 'Transaction not found' });
+    }
+    
+    // Get product price from transaction items
+    const [items] = await pool.execute(
+      'SELECT price FROM transaction_items WHERE transaction_id = ? AND product_id = ?',
+      [transaction_id, product_id]
+    );
+    
+    if (items.length === 0) {
+      return res.status(404).json({ error: 'Product not found in transaction' });
+    }
+    
+    const product_price = items[0].price;
+    
+    // Create claim
+    const [result] = await pool.execute(
+      'INSERT INTO product_claims (customer_id, user_id, transaction_id, product_id, product_price, claim_reason) VALUES (?, ?, ?, ?, ?, ?)',
+      [req.customer_id, req.user.id, transaction_id, product_id, product_price, claim_reason]
+    );
+    
+    res.status(201).json({
+      message: 'Claim created successfully',
+      claim_id: result.insertId
+    });
+  } catch (error) {
+    console.error('Error creating claim:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get all product claims (admin only)
+app.get('/api/product-claims', authenticateToken, async (req, res) => {
+  try {
+    // Check if user is admin
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    
+    const [claims] = await pool.execute(`
+      SELECT 
+        pc.*,
+        u.fullname as user_name,
+        u.email as user_email,
+        p.title as product_title,
+        t.bill_number
+      FROM product_claims pc
+      JOIN users u ON pc.user_id = u.id
+      JOIN products p ON pc.product_id = p.id
+      JOIN transactions t ON pc.transaction_id = t.id
+      WHERE pc.customer_id = ?
+      ORDER BY pc.created_at DESC
+    `, [req.customer_id]);
+    
+    res.json(claims);
+  } catch (error) {
+    console.error('Error fetching claims:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get product claim by ID
+app.get('/api/product-claims/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const [claims] = await pool.execute(`
+      SELECT 
+        pc.*,
+        u.fullname as user_name,
+        u.email as user_email,
+        p.title as product_title,
+        t.bill_number
+      FROM product_claims pc
+      JOIN users u ON pc.user_id = u.id
+      JOIN products p ON pc.product_id = p.id
+      JOIN transactions t ON pc.transaction_id = t.id
+      WHERE pc.id = ? AND pc.customer_id = ?
+    `, [id, req.customer_id]);
+    
+    if (claims.length === 0) {
+      return res.status(404).json({ error: 'Claim not found' });
+    }
+    
+    // Check if user is admin or the claim owner
+    if (req.user.role !== 'admin' && claims[0].user_id !== req.user.id) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    
+    res.json(claims[0]);
+  } catch (error) {
+    console.error('Error fetching claim:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Update claim status (admin only)
+app.put('/api/product-claims/:id/status', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+    
+    // Check if user is admin
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    
+    if (!['pending', 'approved', 'rejected', 'refunded'].includes(status)) {
+      return res.status(400).json({ error: 'Invalid status' });
+    }
+    
+    const [result] = await pool.execute(
+      'UPDATE product_claims SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND customer_id = ?',
+      [status, id, req.customer_id]
+    );
+    
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Claim not found' });
+    }
+    
+    res.json({ message: 'Status updated successfully' });
+  } catch (error) {
+    console.error('Error updating status:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Add admin note to claim (admin only)
+app.put('/api/product-claims/:id/note', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { admin_note } = req.body;
+    
+    // Check if user is admin
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    
+    const [result] = await pool.execute(
+      'UPDATE product_claims SET admin_note = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND customer_id = ?',
+      [admin_note, id, req.customer_id]
+    );
+    
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Claim not found' });
+    }
+    
+    res.json({ message: 'Note updated successfully' });
+  } catch (error) {
+    console.error('Error updating note:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Process refund for approved claim (admin only)
+app.post('/api/product-claims/:id/refund', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Check if user is admin
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    
+    // Get claim details
+    const [claims] = await pool.execute(
+      'SELECT * FROM product_claims WHERE id = ? AND customer_id = ? AND status = "approved"',
+      [id, req.customer_id]
+    );
+    
+    if (claims.length === 0) {
+      return res.status(404).json({ error: 'Approved claim not found' });
+    }
+    
+    const claim = claims[0];
+    
+    // Start transaction
+    const connection = await pool.getConnection();
+    await connection.beginTransaction();
+    
+    try {
+      // Add money back to user
+      await connection.execute(
+        'UPDATE users SET money = money + ? WHERE id = ? AND customer_id = ?',
+        [claim.product_price, claim.user_id, req.customer_id]
+      );
+      
+      // Update claim status to processed (optional - you can add this status)
+      await connection.execute(
+        'UPDATE product_claims SET status = "refunded", updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+        [id]
+      );
+      
+      await connection.commit();
+      
+      res.json({ 
+        message: 'Refund processed successfully',
+        refund_amount: claim.product_price
+      });
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
+  } catch (error) {
+    console.error('Error processing refund:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Delete product claim (admin only)
+app.delete('/api/product-claims/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Check if user is admin
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    
+    const [result] = await pool.execute(
+      'DELETE FROM product_claims WHERE id = ? AND customer_id = ?',
+      [id, req.customer_id]
+    );
+    
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Claim not found' });
+    }
+    
+    res.json({ message: 'Claim deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting claim:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get user's own claims
+app.get('/api/user/product-claims', authenticateToken, async (req, res) => {
+  try {
+    const [claims] = await pool.execute(`
+      SELECT 
+        pc.*,
+        p.title as product_title,
+        t.bill_number
+      FROM product_claims pc
+      JOIN products p ON pc.product_id = p.id
+      JOIN transactions t ON pc.transaction_id = t.id
+      WHERE pc.user_id = ? AND pc.customer_id = ?
+      ORDER BY pc.created_at DESC
+    `, [req.user.id, req.customer_id]);
+    
+    res.json(claims);
+  } catch (error) {
+    console.error('Error fetching user claims:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get available transactions for claim (user's own transactions)
+app.get('/api/user/transactions-for-claim', authenticateToken, async (req, res) => {
+  try {
+    const [transactions] = await pool.execute(`
+      SELECT 
+        t.id,
+        t.bill_number,
+        t.total_price,
+        t.created_at,
+        GROUP_CONCAT(
+          CONCAT(ti.product_id, ':', p.title, ':', ti.price, ':', ti.quantity) 
+          SEPARATOR '|'
+        ) as products
+      FROM transactions t
+      JOIN transaction_items ti ON t.id = ti.transaction_id
+      JOIN products p ON ti.product_id = p.id
+      WHERE t.user_id = ? AND t.customer_id = ?
+      GROUP BY t.id
+      ORDER BY t.created_at DESC
+    `, [req.user.id, req.customer_id]);
+    
+    // Format the response
+    const formattedTransactions = transactions.map(transaction => ({
+      id: transaction.id,
+      bill_number: transaction.bill_number,
+      total_price: transaction.total_price,
+      created_at: transaction.created_at,
+      products: transaction.products ? transaction.products.split('|').map(product => {
+        const [product_id, title, price, quantity] = product.split(':');
+        return {
+          product_id: parseInt(product_id),
+          title,
+          price: parseFloat(price),
+          quantity: parseInt(quantity)
+        };
+      }) : []
+    }));
+    
+    res.json(formattedTransactions);
+  } catch (error) {
+    console.error('Error fetching transactions:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // Start server
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
