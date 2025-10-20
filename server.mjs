@@ -6596,6 +6596,111 @@ app.get('/api/user/transactions-for-claim', authenticateToken, async (req, res) 
   }
 });
 
+// Get latest 10 transactions per customer_id
+app.get('/api/admin/latest-transactions-by-customer', authenticateToken, requirePermission('can_edit_products'), async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 10;
+    
+    // Query to get latest transactions grouped by customer_id using Window Function
+    const [results] = await pool.execute(`
+      WITH RankedTransactions AS (
+        SELECT 
+          t.id,
+          t.customer_id,
+          t.bill_number,
+          t.user_id,
+          t.total_price,
+          t.created_at,
+          u.fullname,
+          u.email,
+          auth.website_name,
+          ROW_NUMBER() OVER (PARTITION BY t.customer_id ORDER BY t.created_at DESC) as row_num
+        FROM transactions t
+        LEFT JOIN users u ON t.user_id = u.id
+        LEFT JOIN auth_sites auth ON t.customer_id = auth.customer_id
+        GROUP BY t.id, t.customer_id, t.bill_number, t.user_id, t.total_price, t.created_at, u.fullname, u.email, auth.website_name
+      )
+      SELECT 
+        rt.*,
+        ti.id as item_id,
+        ti.product_id,
+        ti.quantity,
+        ti.price as item_price,
+        p.title as product_title,
+        p.image as product_image
+      FROM RankedTransactions rt
+      LEFT JOIN transaction_items ti ON rt.id = ti.transaction_id
+      LEFT JOIN products p ON ti.product_id = p.id
+      WHERE rt.row_num <= ?
+      ORDER BY rt.customer_id ASC, rt.created_at DESC, ti.id ASC
+    `, [limit]);
+    
+    // Group by customer_id and transaction_id
+    const groupedData = {};
+    const transactionMap = new Map();
+    
+    results.forEach(row => {
+      const customerId = row.customer_id;
+      const transactionId = row.id;
+      
+      // Create customer group if not exists
+      if (!groupedData[customerId]) {
+        groupedData[customerId] = {
+          customer_id: customerId,
+          website_name: row.website_name,
+          transactions: []
+        };
+      }
+      
+      // Create transaction if not exists
+      if (!transactionMap.has(transactionId)) {
+        const transaction = {
+          id: row.id,
+          bill_number: row.bill_number,
+          user_id: row.user_id,
+          user_fullname: row.fullname,
+          user_email: row.email,
+          total_price: parseFloat(row.total_price),
+          created_at: row.created_at,
+          products: []
+        };
+        transactionMap.set(transactionId, transaction);
+        groupedData[customerId].transactions.push(transaction);
+      }
+      
+      // Add product to transaction
+      if (row.item_id) {
+        transactionMap.get(transactionId).products.push({
+          product_id: row.product_id,
+          title: row.product_title,
+          image: row.product_image,
+          quantity: row.quantity,
+          price: parseFloat(row.item_price)
+        });
+      }
+    });
+    
+    // Convert to array
+    const responseData = Object.values(groupedData);
+    
+    res.json({
+      success: true,
+      message: 'Latest transactions by customer retrieved successfully',
+      data: responseData,
+      total_customers: responseData.length,
+      limit_per_customer: limit
+    });
+    
+  } catch (error) {
+    console.error('Error fetching latest transactions by customer:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Internal server error',
+      message: error.message
+    });
+  }
+});
+
 // Start server
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
