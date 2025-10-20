@@ -6299,6 +6299,16 @@ app.post('/api/product-claims', authenticateToken, async (req, res) => {
       return res.status(404).json({ error: 'Transaction not found' });
     }
     
+    // Check if this transaction already has a claim
+    const [existingClaims] = await pool.execute(
+      'SELECT id FROM product_claims WHERE transaction_id = ? AND customer_id = ?',
+      [transaction_id, req.customer_id]
+    );
+    
+    if (existingClaims.length > 0) {
+      return res.status(400).json({ error: 'This transaction already has a claim' });
+    }
+    
     // Get product price from transaction items
     const [items] = await pool.execute(
       'SELECT price FROM transaction_items WHERE transaction_id = ? AND product_id = ?',
@@ -6327,14 +6337,9 @@ app.post('/api/product-claims', authenticateToken, async (req, res) => {
   }
 });
 
-// Get all product claims (admin only)
-app.get('/api/product-claims', authenticateToken, async (req, res) => {
+// Get all product claims (requires can_edit_orders permission)
+app.get('/api/product-claims', authenticateToken, requirePermission('can_edit_orders'), async (req, res) => {
   try {
-    // Check if user is admin
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ error: 'Access denied' });
-    }
-    
     const [claims] = await pool.execute(`
       SELECT 
         pc.*,
@@ -6380,8 +6385,19 @@ app.get('/api/product-claims/:id', authenticateToken, async (req, res) => {
       return res.status(404).json({ error: 'Claim not found' });
     }
     
-    // Check if user is admin or the claim owner
-    if (req.user.role !== 'admin' && claims[0].user_id !== req.user.id) {
+    // Check if user has permission or is the claim owner
+    const [userRoles] = await pool.execute(
+      `SELECT r.can_edit_orders
+      FROM users u
+      LEFT JOIN roles r ON u.role = r.rank_name AND r.customer_id = u.customer_id
+      WHERE u.id = ?`,
+      [req.user.id]
+    );
+    
+    const hasPermission = userRoles.length > 0 && userRoles[0].can_edit_orders;
+    const isOwner = claims[0].user_id === req.user.id;
+    
+    if (!hasPermission && !isOwner) {
       return res.status(403).json({ error: 'Access denied' });
     }
     
@@ -6392,16 +6408,11 @@ app.get('/api/product-claims/:id', authenticateToken, async (req, res) => {
   }
 });
 
-// Update claim status (admin only)
-app.put('/api/product-claims/:id/status', authenticateToken, async (req, res) => {
+// Update claim status (requires can_edit_orders permission)
+app.put('/api/product-claims/:id/status', authenticateToken, requirePermission('can_edit_orders'), async (req, res) => {
   try {
     const { id } = req.params;
     const { status } = req.body;
-    
-    // Check if user is admin
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ error: 'Access denied' });
-    }
     
     if (!['pending', 'approved', 'rejected', 'refunded'].includes(status)) {
       return res.status(400).json({ error: 'Invalid status' });
@@ -6423,16 +6434,11 @@ app.put('/api/product-claims/:id/status', authenticateToken, async (req, res) =>
   }
 });
 
-// Add admin note to claim (admin only)
-app.put('/api/product-claims/:id/note', authenticateToken, async (req, res) => {
+// Add admin note to claim (requires can_edit_orders permission)
+app.put('/api/product-claims/:id/note', authenticateToken, requirePermission('can_edit_orders'), async (req, res) => {
   try {
     const { id } = req.params;
     const { admin_note } = req.body;
-    
-    // Check if user is admin
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ error: 'Access denied' });
-    }
     
     const [result] = await pool.execute(
       'UPDATE product_claims SET admin_note = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND customer_id = ?',
@@ -6450,15 +6456,10 @@ app.put('/api/product-claims/:id/note', authenticateToken, async (req, res) => {
   }
 });
 
-// Process refund for approved claim (admin only)
-app.post('/api/product-claims/:id/refund', authenticateToken, async (req, res) => {
+// Process refund for approved claim (requires can_edit_orders permission)
+app.post('/api/product-claims/:id/refund', authenticateToken, requirePermission('can_edit_orders'), async (req, res) => {
   try {
     const { id } = req.params;
-    
-    // Check if user is admin
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ error: 'Access denied' });
-    }
     
     // Get claim details
     const [claims] = await pool.execute(
@@ -6507,15 +6508,10 @@ app.post('/api/product-claims/:id/refund', authenticateToken, async (req, res) =
   }
 });
 
-// Delete product claim (admin only)
-app.delete('/api/product-claims/:id', authenticateToken, async (req, res) => {
+// Delete product claim (requires can_edit_orders permission)
+app.delete('/api/product-claims/:id', authenticateToken, requirePermission('can_edit_orders'), async (req, res) => {
   try {
     const { id } = req.params;
-    
-    // Check if user is admin
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ error: 'Access denied' });
-    }
     
     const [result] = await pool.execute(
       'DELETE FROM product_claims WHERE id = ? AND customer_id = ?',
