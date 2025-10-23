@@ -6,7 +6,7 @@ import cors from 'cors';
 import axios from 'axios';
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 5001;
 
 // JWT Secret Key
 const JWT_SECRET = '32670cc39ca9333bedb30406cc22c4bc';
