@@ -2067,6 +2067,8 @@ app.get('/get-stats', async (req, res) => {
       });
     }
 
+    console.log('Fetching stats for customer_id:', req.customer_id);
+
     // Check database connection status
     let dbStatus = '24/7';
     let dbMessage = 'Database is running normally';
@@ -2086,6 +2088,7 @@ app.get('/get-stats', async (req, res) => {
       [req.customer_id]
     );
     const totalUsers = userCountResult[0].total_users;
+    console.log('Total users:', totalUsers);
 
     // Get total sold items count (from transaction_items) for specific customer
     const [soldItemsResult] = await pool.execute(
@@ -2093,6 +2096,7 @@ app.get('/get-stats', async (req, res) => {
       [req.customer_id]
     );
     const totalSoldItems = soldItemsResult[0].total_sold;
+    console.log('Total sold items:', totalSoldItems);
 
     // Get unsold product stock count for specific customer
     const [unsoldStockResult] = await pool.execute(
@@ -2100,14 +2104,47 @@ app.get('/get-stats', async (req, res) => {
       [req.customer_id]
     );
     const totalUnsoldStock = unsoldStockResult[0].total_unsold;
+    console.log('Total unsold stock:', totalUnsoldStock);
+
+    // Get total products count for debugging
+    const [productsResult] = await pool.execute(
+      'SELECT COUNT(*) as total_products FROM products WHERE customer_id = ?',
+      [req.customer_id]
+    );
+    const totalProducts = productsResult[0].total_products;
+    console.log('Total products:', totalProducts);
+
+    // Get total licenses count (both sold and unsold) for debugging
+    const [licensesResult] = await pool.execute(
+      'SELECT COUNT(*) as total_licenses, SUM(CASE WHEN sold = 0 THEN 1 ELSE 0 END) as unsold_licenses, SUM(CASE WHEN sold = 1 THEN 1 ELSE 0 END) as sold_licenses FROM product_stock WHERE customer_id = ?',
+      [req.customer_id]
+    );
+    const licensesStats = licensesResult[0];
+    console.log('Licenses stats:', licensesStats);
 
     res.json({
       success: true,
       message: 'Statistics retrieved successfully',
+      debug: {
+        customer_id: req.customer_id,
+        total_products: totalProducts,
+        licenses: licensesStats
+      },
       stats: {
-        total_users: totalUsers,
-        total_sold_items: totalSoldItems,
-        total_unsold_stock: totalUnsoldStock,
+        users: {
+          total_users: totalUsers
+        },
+        products: {
+          total_products: totalProducts
+        },
+        stock: {
+          total_licenses: parseInt(licensesStats.total_licenses) || 0,
+          sold_licenses: parseInt(licensesStats.sold_licenses) || 0,
+          unsold_licenses: parseInt(licensesStats.unsold_licenses) || 0
+        },
+        transactions: {
+          total_sold_items: totalSoldItems
+        },
         database_status: {
           status: dbStatus,
           message: dbMessage,
@@ -2123,9 +2160,14 @@ app.get('/get-stats', async (req, res) => {
       message: 'Internal server error',
       error: error.message,
       stats: {
-        total_users: 0,
-        total_sold_items: 0,
-        total_unsold_stock: 0,
+        users: { total_users: 0 },
+        products: { total_products: 0 },
+        stock: { 
+          total_licenses: 0,
+          sold_licenses: 0,
+          unsold_licenses: 0
+        },
+        transactions: { total_sold_items: 0 },
         database_status: {
           status: 'อยู่ระหว่างปรับปรุง',
           message: 'Unable to retrieve statistics',
