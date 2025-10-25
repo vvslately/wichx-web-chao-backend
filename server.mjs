@@ -13,11 +13,11 @@ const JWT_SECRET = '32670cc39ca9333bedb30406cc22c4bc';
 
 // Database configuration
 const dbConfig = {
-  host: 'ballast.proxy.rlwy.net',
-  port: 23196,
-  user: 'root',
-  password: 'xsIfUIdmSCzVdzFwkvtHGWEYTjHHWgEK',
-  database: 'railway',
+  host: '210.246.215.19',
+  port: 3306,
+  user: 'okzcuser',
+  password: 'StrongPass123!',
+  database: 'okzc',
   ssl: {
     rejectUnauthorized: false
   }
