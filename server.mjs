@@ -757,7 +757,7 @@ app.get('/get-web-config', async (req, res) => {
        banner2_link, banner3_link, navigation_banner_1, navigation_link_1,
        navigation_banner_2, navigation_link_2, navigation_banner_3, navigation_link_3,
        navigation_banner_4, navigation_link_4, background_image, footer_image, load_logo, 
-       footer_logo, ad_banner, bank_account_name, bank_account_number, bank_account_name_thai, created_at, updated_at 
+       footer_logo, ad_banner, bank_account_name, bank_account_number, bank_account_name_thai, bank_account_tax, created_at, updated_at 
        FROM config WHERE customer_id = ? ORDER BY id LIMIT 1`,
       [req.customer_id]
     );
@@ -804,6 +804,7 @@ app.get('/get-web-config', async (req, res) => {
         bank_account_name: config.bank_account_name,
         bank_account_number: config.bank_account_number,
         bank_account_name_thai: config.bank_account_name_thai,
+        bank_account_tax: config.bank_account_tax,
         created_at: config.created_at,
         updated_at: config.updated_at
       }
@@ -862,7 +863,8 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
       ad_banner,
       bank_account_name,
       bank_account_number,
-      bank_account_name_thai
+      bank_account_name_thai,
+      bank_account_tax
     } = req.body;
 
     // Check if config exists for this customer
@@ -995,6 +997,11 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
       updateValues.push(bank_account_name_thai);
     }
 
+    if (bank_account_tax !== undefined) {
+      updateFields.push('bank_account_tax = ?');
+      updateValues.push(bank_account_tax);
+    }
+
     if (updateFields.length === 0) {
       return res.status(400).json({
         success: false,
@@ -1025,7 +1032,7 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
        banner2_link, banner3_link, navigation_banner_1, navigation_link_1,
        navigation_banner_2, navigation_link_2, navigation_banner_3, navigation_link_3,
        navigation_banner_4, navigation_link_4, background_image, footer_image, load_logo, 
-       footer_logo, ad_banner, bank_account_name, bank_account_number, bank_account_name_thai, created_at, updated_at 
+       footer_logo, ad_banner, bank_account_name, bank_account_number, bank_account_name_thai, bank_account_tax, created_at, updated_at 
        FROM config WHERE customer_id = ?`,
       [req.customer_id]
     );
@@ -1065,6 +1072,7 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
         bank_account_name: updatedConfig.bank_account_name,
         bank_account_number: updatedConfig.bank_account_number,
         bank_account_name_thai: updatedConfig.bank_account_name_thai,
+        bank_account_tax: updatedConfig.bank_account_tax,
         created_at: updatedConfig.created_at,
         updated_at: updatedConfig.updated_at
       }
@@ -6168,9 +6176,9 @@ app.post('/api/slip', authenticateToken, async (req, res) => {
       });
     }
 
-    // Get config to check receiver_name and bank_account_number
+    // Get config to check receiver_name and bank_account_number and tax
     const [configs] = await pool.execute(
-      'SELECT bank_account_name, bank_account_number, bank_account_name_thai FROM config WHERE customer_id = ?',
+      'SELECT bank_account_name, bank_account_number, bank_account_name_thai, bank_account_tax FROM config WHERE customer_id = ?',
       [req.customer_id]
     );
 
@@ -6237,6 +6245,18 @@ app.post('/api/slip', authenticateToken, async (req, res) => {
       });
     }
 
+    // Calculate tenant tax and net credit amount
+    const taxRate = parseFloat(config.bank_account_tax || 0);
+    const computedTaxAmount = Math.max(0, Math.round((amount * (isNaN(taxRate) ? 0 : taxRate / 100)) * 100) / 100);
+    const creditedAmount = Math.max(0, Math.round((amount - computedTaxAmount) * 100) / 100);
+
+    console.log('Tax calculation:', {
+      tax_rate_percent: isNaN(taxRate) ? 0 : taxRate,
+      gross_amount: amount,
+      tax_amount: computedTaxAmount,
+      credited_amount: creditedAmount
+    });
+
     // Start transaction
     const connection = await pool.getConnection();
     await connection.beginTransaction();
@@ -6245,14 +6265,17 @@ app.post('/api/slip', authenticateToken, async (req, res) => {
       console.log('Starting topup process:', {
         customer_id: req.customer_id,
         user_id: req.user.id,
-        amount: amount,
+        amount_gross: amount,
+        tax_rate_percent: isNaN(taxRate) ? 0 : taxRate,
+        tax_amount: computedTaxAmount,
+        amount_credited: creditedAmount,
         ref: ref
       });
       
       // Insert into topups table
       const [topupResult] = await connection.execute(
         'INSERT INTO topups (customer_id, user_id, amount, method, transaction_ref, status) VALUES (?, ?, ?, ?, ?, ?)',
-        [req.customer_id, req.user.id, amount, 'bank_transfer', ref, 'success']
+        [req.customer_id, req.user.id, creditedAmount, 'bank_transfer', ref, 'success']
       );
       
       console.log('Topup record inserted:', topupResult.insertId);
@@ -6260,7 +6283,7 @@ app.post('/api/slip', authenticateToken, async (req, res) => {
       // Update user balance
       const [updateResult] = await connection.execute(
         'UPDATE users SET money = money + ? WHERE id = ? AND customer_id = ?',
-        [amount, req.user.id, req.customer_id]
+        [creditedAmount, req.user.id, req.customer_id]
       );
       
       console.log('User balance update result:', updateResult.affectedRows);
@@ -6279,13 +6302,16 @@ app.post('/api/slip', authenticateToken, async (req, res) => {
 
       await connection.commit();
 
-      console.log(`Slip topup successful: Customer ${req.customer_id}, User ${req.user.id}, Amount: ${amount}, Ref: ${ref}, New Balance: ${newBalance}`);
+      console.log(`Slip topup successful: Customer ${req.customer_id}, User ${req.user.id}, Gross: ${amount}, Tax: ${computedTaxAmount}, Credited: ${creditedAmount}, Ref: ${ref}, New Balance: ${newBalance}`);
 
       res.json({
         success: true,
         message: 'เติมเงินสำเร็จ',
         data: {
-          amount: amount,
+          amount: creditedAmount,
+          amount_gross: amount,
+          tax_rate_percent: isNaN(taxRate) ? 0 : taxRate,
+          tax_amount: computedTaxAmount,
           new_balance: newBalance,
           topup_id: topupResult.insertId,
           transaction_ref: ref,
