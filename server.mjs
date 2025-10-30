@@ -6638,12 +6638,21 @@ app.get('/api/user/transactions-for-claim', authenticateToken, async (req, res) 
   }
 });
 
-// Get latest 10 transactions per customer_id
-app.get('/api/admin/latest-transactions-by-customer', authenticateToken, requirePermission('can_edit_products'), async (req, res) => {
+
+// Get latest transactions (Multi-tenant version - public access)
+app.get('/api/latest-transactions-by-customer', async (req, res) => {
   try {
+    // Check if customer_id is available
+    if (!req.customer_id) {
+      return res.status(400).json({
+        success: false,
+        message: 'Customer context required'
+      });
+    }
+
     const limit = parseInt(req.query.limit) || 10;
     
-    // Query to get latest transactions grouped by customer_id using Window Function
+    // Query to get latest transactions for the current customer only
     const [results] = await pool.execute(`
       WITH RankedTransactions AS (
         SELECT 
@@ -6658,8 +6667,9 @@ app.get('/api/admin/latest-transactions-by-customer', authenticateToken, require
           auth.website_name,
           ROW_NUMBER() OVER (PARTITION BY t.customer_id ORDER BY t.created_at DESC) as row_num
         FROM transactions t
-        LEFT JOIN users u ON t.user_id = u.id
+        LEFT JOIN users u ON t.user_id = u.id AND u.customer_id = ?
         LEFT JOIN auth_sites auth ON t.customer_id = auth.customer_id
+        WHERE t.customer_id = ?
         GROUP BY t.id, t.customer_id, t.bill_number, t.user_id, t.total_price, t.created_at, u.fullname, u.email, auth.website_name
       )
       SELECT 
@@ -6672,10 +6682,10 @@ app.get('/api/admin/latest-transactions-by-customer', authenticateToken, require
         p.image as product_image
       FROM RankedTransactions rt
       LEFT JOIN transaction_items ti ON rt.id = ti.transaction_id
-      LEFT JOIN products p ON ti.product_id = p.id
+      LEFT JOIN products p ON ti.product_id = p.id AND p.customer_id = ?
       WHERE rt.row_num <= ?
       ORDER BY rt.customer_id ASC, rt.created_at DESC, ti.id ASC
-    `, [limit]);
+    `, [req.customer_id, req.customer_id, req.customer_id, limit]);
     
     // Group by customer_id and transaction_id
     const groupedData = {};
