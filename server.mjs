@@ -6665,6 +6665,255 @@ app.get('/api/user/transactions-for-claim', authenticateToken, async (req, res) 
 });
 
 
+// ==================== EXTERNAL PRODUCT API INTEGRATION ====================
+
+// Get products from external wichxshop API
+app.get('/api/external/products', authenticateToken, requirePermission('can_edit_products'), async (req, res) => {
+  try {
+    // Check if customer_id is available
+    if (!req.customer_id) {
+      return res.status(400).json({
+        success: false,
+        message: 'Customer context required'
+      });
+    }
+
+    // Fetch products from external API
+    const response = await axios.get('https://wichxshop.com/api/v1/store/product', {
+      timeout: 30000,
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    });
+
+    // Return the response from external API
+    res.json(response.data);
+
+  } catch (error) {
+    console.error('External products API error:', error);
+    
+    if (error.response) {
+      return res.status(error.response.status).json({
+        success: false,
+        message: 'Error fetching products from external API',
+        error: error.response.data || 'API error'
+      });
+    }
+
+    res.status(500).json({
+      success: false,
+      message: 'เกิดข้อผิดพลาดในการเชื่อมต่อกับ external API',
+      error: error.message
+    });
+  }
+});
+
+// Import products from external API to local database
+app.post('/api/external/products/import', authenticateToken, requirePermission('can_edit_products'), async (req, res) => {
+  const connection = await pool.getConnection();
+  
+  try {
+    await connection.beginTransaction();
+
+    // Check if customer_id is available
+    if (!req.customer_id) {
+      return res.status(400).json({
+        success: false,
+        message: 'Customer context required'
+      });
+    }
+
+    const { category_id, overwrite = false } = req.body;
+
+    // Validate category_id
+    if (!category_id) {
+      return res.status(400).json({
+        success: false,
+        message: 'Category ID is required for importing products'
+      });
+    }
+
+    // Check if category exists for this customer
+    const [categoryCheck] = await connection.execute(
+      'SELECT id, title FROM categories WHERE id = ? AND customer_id = ? AND isActive = 1',
+      [category_id, req.customer_id]
+    );
+
+    if (categoryCheck.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Category not found or inactive'
+      });
+    }
+
+    // Fetch products from external API
+    const response = await axios.get('https://wichxshop.com/api/v1/store/product', {
+      timeout: 30000,
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    });
+
+    if (!response.data.success || !response.data.data || !Array.isArray(response.data.data)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid response from external API'
+      });
+    }
+
+    const externalProducts = response.data.data;
+    const importedProducts = [];
+    const skippedProducts = [];
+    const errors = [];
+
+    for (const extProduct of externalProducts) {
+      try {
+        // Map external product fields to database fields
+        const title = extProduct.name || 'Untitled Product';
+        const price = parseFloat(extProduct.price) || 0;
+        const image = extProduct.image || null;
+        const stock = parseInt(extProduct.stock) || 0;
+        const discountValue = extProduct.discountValue ? parseFloat(extProduct.discountValue) : 0;
+        const discountType = extProduct.discountType || 'NONE';
+        
+        // Calculate discount_percent based on discountType
+        let discount_percent = 0;
+        if (discountType === 'FIXED_AMOUNT' && price > 0 && discountValue > 0) {
+          discount_percent = Math.round((discountValue / price) * 100);
+        } else if (discountType !== 'NONE' && discountValue > 0 && price > 0) {
+          discount_percent = Math.round((discountValue / price) * 100);
+        }
+
+        // Build subtitle from additional info
+        let subtitle = null;
+        const subtitleParts = [];
+        if (extProduct.isPreorder) {
+          subtitleParts.push('(พรีออเดอร์)');
+        }
+        if (extProduct.slug) {
+          subtitleParts.push(`Slug: ${extProduct.slug}`);
+        }
+        if (subtitleParts.length > 0) {
+          subtitle = subtitleParts.join(' | ');
+        }
+
+        // Check if product already exists (by title in this category)
+        const [existingProducts] = await connection.execute(
+          'SELECT id FROM products WHERE customer_id = ? AND category_id = ? AND title = ?',
+          [req.customer_id, category_id, title]
+        );
+
+        if (existingProducts.length > 0) {
+          if (overwrite) {
+            // Update existing product
+            await connection.execute(
+              `UPDATE products SET 
+                price = ?, 
+                image = ?, 
+                stock = ?, 
+                discount_percent = ?,
+                subtitle = ?,
+                updated_at = CURRENT_TIMESTAMP
+              WHERE id = ? AND customer_id = ?`,
+              [price, image, stock, discount_percent, subtitle, existingProducts[0].id, req.customer_id]
+            );
+            importedProducts.push({
+              id: existingProducts[0].id,
+              title: title,
+              action: 'updated'
+            });
+          } else {
+            skippedProducts.push({
+              title: title,
+              reason: 'Product already exists'
+            });
+          }
+          continue;
+        }
+
+        // Insert new product
+        const [result] = await connection.execute(
+          `INSERT INTO products (
+            customer_id, category_id, title, subtitle, price, reseller_price, 
+            stock, duration, image, download_link, isSpecial, featured, 
+            isWarrenty, warrenty_text, primary_color, secondary_color, 
+            priority, discount_percent
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            req.customer_id, 
+            category_id, 
+            title, 
+            subtitle, 
+            price, 
+            null, // reseller_price
+            stock, 
+            null, // duration
+            image, 
+            extProduct.slug || null, // download_link
+            0, // isSpecial
+            0, // featured
+            0, // isWarrenty
+            extProduct.isPreorder ? 'สินค้าพรีออเดอร์' : null, // warrenty_text
+            null, // primary_color
+            null, // secondary_color
+            0, // priority
+            discount_percent
+          ]
+        );
+
+        importedProducts.push({
+          id: result.insertId,
+          title: title,
+          action: 'created'
+        });
+
+      } catch (productError) {
+        console.error(`Error importing product "${extProduct.name}":`, productError);
+        errors.push({
+          product: extProduct.name || 'Unknown',
+          error: productError.message
+        });
+      }
+    }
+
+    await connection.commit();
+
+    res.json({
+      success: true,
+      message: 'Products imported successfully',
+      summary: {
+        total_external_products: externalProducts.length,
+        imported: importedProducts.length,
+        skipped: skippedProducts.length,
+        errors: errors.length
+      },
+      imported_products: importedProducts,
+      skipped_products: skippedProducts,
+      errors: errors.length > 0 ? errors : undefined
+    });
+
+  } catch (error) {
+    await connection.rollback();
+    console.error('Import products error:', error);
+    
+    if (error.response) {
+      return res.status(500).json({
+        success: false,
+        message: 'Error fetching products from external API',
+        error: error.response.data || 'API error'
+      });
+    }
+
+    res.status(500).json({
+      success: false,
+      message: 'เกิดข้อผิดพลาดในการ import สินค้า',
+      error: error.message
+    });
+  } finally {
+    connection.release();
+  }
+});
+
 // Get latest transactions (Multi-tenant version - public access)
 app.get('/api/latest-transactions-by-customer', async (req, res) => {
   try {
