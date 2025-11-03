@@ -757,7 +757,7 @@ app.get('/get-web-config', async (req, res) => {
        banner2_link, banner3_link, navigation_banner_1, navigation_link_1,
        navigation_banner_2, navigation_link_2, navigation_banner_3, navigation_link_3,
        navigation_banner_4, navigation_link_4, background_image, footer_image, load_logo, 
-       footer_logo, ad_banner, bank_account_name, bank_account_number, bank_account_name_thai, bank_account_tax, created_at, updated_at 
+       footer_logo, ad_banner, bank_account_name, bank_account_number, bank_account_name_thai, bank_account_tax, api, created_at, updated_at 
        FROM config WHERE customer_id = ? ORDER BY id LIMIT 1`,
       [req.customer_id]
     );
@@ -805,6 +805,7 @@ app.get('/get-web-config', async (req, res) => {
         bank_account_number: config.bank_account_number,
         bank_account_name_thai: config.bank_account_name_thai,
         bank_account_tax: config.bank_account_tax,
+        api: config.api,
         created_at: config.created_at,
         updated_at: config.updated_at
       }
@@ -864,7 +865,8 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
       bank_account_name,
       bank_account_number,
       bank_account_name_thai,
-      bank_account_tax
+      bank_account_tax,
+      api
     } = req.body;
 
     // Check if config exists for this customer
@@ -1001,6 +1003,10 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
       updateFields.push('bank_account_tax = ?');
       updateValues.push(bank_account_tax);
     }
+    if (api !== undefined) {
+      updateFields.push('api = ?');
+      updateValues.push(api);
+    }
 
     if (updateFields.length === 0) {
       return res.status(400).json({
@@ -1032,7 +1038,7 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
        banner2_link, banner3_link, navigation_banner_1, navigation_link_1,
        navigation_banner_2, navigation_link_2, navigation_banner_3, navigation_link_3,
        navigation_banner_4, navigation_link_4, background_image, footer_image, load_logo, 
-       footer_logo, ad_banner, bank_account_name, bank_account_number, bank_account_name_thai, bank_account_tax, created_at, updated_at 
+       footer_logo, ad_banner, bank_account_name, bank_account_number, bank_account_name_thai, bank_account_tax, api, created_at, updated_at 
        FROM config WHERE customer_id = ?`,
       [req.customer_id]
     );
@@ -1073,6 +1079,7 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
         bank_account_number: updatedConfig.bank_account_number,
         bank_account_name_thai: updatedConfig.bank_account_name_thai,
         bank_account_tax: updatedConfig.bank_account_tax,
+        api: updatedConfig.api,
         created_at: updatedConfig.created_at,
         updated_at: updatedConfig.updated_at
       }
@@ -6176,9 +6183,9 @@ app.post('/api/slip', authenticateToken, async (req, res) => {
       });
     }
 
-    // Get config to check receiver_name and bank_account_number and tax
+    // Get config to check receiver_name and bank_account_number and tax and api
     const [configs] = await pool.execute(
-      'SELECT bank_account_name, bank_account_number, bank_account_name_thai, bank_account_tax FROM config WHERE customer_id = ?',
+      'SELECT bank_account_name, bank_account_number, bank_account_name_thai, bank_account_tax, api FROM config WHERE customer_id = ?',
       [req.customer_id]
     );
 
@@ -6245,6 +6252,45 @@ app.post('/api/slip', authenticateToken, async (req, res) => {
       });
     }
 
+    // Check if API key is configured
+    if (!config.api || config.api.trim() === '') {
+      return res.status(400).json({
+        success: false,
+        message: 'ไม่ได้ตั้งค่า API key กรุณาตั้งค่า API key ก่อนอัพโหลดสลิป'
+      });
+    }
+
+    // Check resell_users balance before proceeding
+    const [resellUsers] = await pool.execute(
+      'SELECT user_id, balance FROM resell_users WHERE api = ?',
+      [config.api]
+    );
+
+    if (resellUsers.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'ไม่พบข้อมูล resell_user ที่เชื่อมกับ API key นี้'
+      });
+    }
+
+    const resellUser = resellUsers[0];
+    const currentBalance = parseFloat(resellUser.balance) || 0;
+
+    if (currentBalance < 0.20) {
+      return res.status(400).json({
+        success: false,
+        message: `เงินในบัญชี resell_users ไม่เพียงพอ (ปัจจุบัน: ${currentBalance.toFixed(2)} บาท, ต้องการ: 0.20 บาท)`,
+        current_balance: currentBalance,
+        required_balance: 0.20
+      });
+    }
+
+    console.log('Resell user balance check passed:', {
+      user_id: resellUser.user_id,
+      current_balance: currentBalance,
+      api_key: config.api
+    });
+
     // Calculate tenant tax and net credit amount
     const taxRate = parseFloat(config.bank_account_tax || 0);
     const computedTaxAmount = Math.max(0, Math.round((amount * (isNaN(taxRate) ? 0 : taxRate / 100)) * 100) / 100);
@@ -6291,6 +6337,16 @@ app.post('/api/slip', authenticateToken, async (req, res) => {
       if (updateResult.affectedRows === 0) {
         throw new Error('ไม่สามารถอัปเดตเงินผู้ใช้ได้');
       }
+
+      // Deduct 0.20 from resell_users (already validated above)
+      const newResellBalance = Math.max(0, currentBalance - 0.20);
+      
+      await connection.execute(
+        'UPDATE resell_users SET balance = ? WHERE user_id = ? AND api = ?',
+        [newResellBalance, resellUser.user_id, config.api]
+      );
+
+      console.log(`Deducted 0.20 from resell_user ${resellUser.user_id}, balance: ${currentBalance} -> ${newResellBalance}`);
 
       // Get new balance
       const [userResult] = await connection.execute(
