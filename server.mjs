@@ -1965,7 +1965,7 @@ app.get('/my-transactions', authenticateToken, async (req, res) => {
         t.id, t.bill_number, t.total_price, t.created_at,
         ti.id as item_id, ti.product_id, ti.quantity, ti.price as item_price,
         ti.license_id, ti.license_message, ps.license_key,
-        p.title as product_title, p.image as product_image
+        p.title as product_title, p.image as product_image, p.download_link as product_download_link
       FROM transactions t
       LEFT JOIN transaction_items ti ON t.id = ti.transaction_id
       LEFT JOIN product_stock ps ON ti.license_id = ps.id
@@ -1995,6 +1995,7 @@ app.get('/my-transactions', authenticateToken, async (req, res) => {
           product_id: row.product_id,
           product_title: row.product_title,
           product_image: row.product_image,
+          product_download_link: row.product_download_link || null,
           quantity: row.quantity,
           price: row.item_price,
           license_key: row.license_key || null,
@@ -3104,6 +3105,10 @@ app.post('/admin/products', authenticateToken, requirePermission('can_edit_produ
     }
 
     // Insert new product
+    // Convert empty strings to null for decimal fields
+    const processedPrice = (price === '' || price === undefined) ? null : price;
+    const processedResellerPrice = (reseller_price === '' || reseller_price === undefined) ? null : reseller_price;
+    
     const [result] = await pool.execute(
       `INSERT INTO products (
         customer_id, category_id, title, subtitle, price, reseller_price, 
@@ -3112,8 +3117,8 @@ app.post('/admin/products', authenticateToken, requirePermission('can_edit_produ
         priority, discount_percent, wichx_id
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        req.customer_id, category_id, title, subtitle || null, price, 
-        reseller_price || null, stock || 0, duration || null, image || null, 
+        req.customer_id, category_id, title, subtitle || null, processedPrice, 
+        processedResellerPrice, stock || 0, duration || null, image || null, 
         download_link || null, isSpecial || 0, featured || 0, isWarrenty || 0, 
         warrenty_text || null, primary_color || null, secondary_color || null, 
         priority || 0, discount_percent || 0, wichx_id || null
@@ -3222,11 +3227,13 @@ app.put('/admin/products/:productId', authenticateToken, requirePermission('can_
     }
     if (price !== undefined) {
       updateFields.push('price = ?');
-      updateValues.push(price);
+      // Convert empty string to null for decimal field
+      updateValues.push(price === '' ? null : price);
     }
     if (reseller_price !== undefined) {
       updateFields.push('reseller_price = ?');
-      updateValues.push(reseller_price);
+      // Convert empty string to null for decimal field
+      updateValues.push(reseller_price === '' ? null : reseller_price);
     }
     if (stock !== undefined) {
       updateFields.push('stock = ?');
