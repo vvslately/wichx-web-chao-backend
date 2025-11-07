@@ -1612,15 +1612,19 @@ app.post('/purchase', authenticateToken, async (req, res) => {
       for (let i = 0; i < quantity; i++) {
         const licenseKey = wichxKeys[i] || '';
         
-        // Create transaction item without license_id (since it's from external API)
+        // Truncate license key if it's too long for license_message field (varchar(50))
+        const licenseMessage = licenseKey.length > 50 ? licenseKey.substring(0, 50) : licenseKey;
+        
+        // Create transaction item with license_message from wichxshop API
         const [itemResult] = await connection.execute(
-          'INSERT INTO transaction_items (customer_id, bill_number, transaction_id, product_id, quantity, price, license_id) VALUES (?, ?, ?, ?, 1, ?, NULL)',
-          [req.customer_id, billNumber, transactionId, product_id, discountedPrice]
+          'INSERT INTO transaction_items (customer_id, bill_number, transaction_id, product_id, quantity, price, license_id, license_message) VALUES (?, ?, ?, ?, 1, ?, NULL, ?)',
+          [req.customer_id, billNumber, transactionId, product_id, discountedPrice, licenseMessage]
         );
 
         transactionItems.push({
           id: itemResult.insertId,
           license_key: licenseKey,
+          license_message: licenseMessage,
           wichx_order_id: wichxOrderId
         });
       }
@@ -1910,7 +1914,7 @@ app.get('/my-transactions', authenticateToken, async (req, res) => {
       `SELECT 
         t.id, t.bill_number, t.total_price, t.created_at,
         ti.id as item_id, ti.product_id, ti.quantity, ti.price as item_price,
-        ti.license_id, ps.license_key,
+        ti.license_id, ti.license_message, ps.license_key,
         p.title as product_title, p.image as product_image
       FROM transactions t
       LEFT JOIN transaction_items ti ON t.id = ti.transaction_id
@@ -1943,7 +1947,8 @@ app.get('/my-transactions', authenticateToken, async (req, res) => {
           product_image: row.product_image,
           quantity: row.quantity,
           price: row.item_price,
-          license_key: row.license_key
+          license_key: row.license_key || null,
+          license_message: row.license_message || null
         });
       }
     });
@@ -6807,7 +6812,7 @@ app.get('/api/user/transactions-for-claim', authenticateToken, async (req, res) 
         t.total_price,
         t.created_at,
         GROUP_CONCAT(
-          CONCAT(ti.product_id, ':', p.title, ':', ti.price, ':', ti.quantity) 
+          CONCAT(ti.product_id, ':', p.title, ':', ti.price, ':', ti.quantity, ':', COALESCE(ti.license_message, '')) 
           SEPARATOR '|'
         ) as products
       FROM transactions t
@@ -6825,12 +6830,14 @@ app.get('/api/user/transactions-for-claim', authenticateToken, async (req, res) 
       total_price: transaction.total_price,
       created_at: transaction.created_at,
       products: transaction.products ? transaction.products.split('|').map(product => {
-        const [product_id, title, price, quantity] = product.split(':');
+        const parts = product.split(':');
+        const [product_id, title, price, quantity, license_message] = parts;
         return {
           product_id: parseInt(product_id),
           title,
           price: parseFloat(price),
-          quantity: parseInt(quantity)
+          quantity: parseInt(quantity),
+          license_message: license_message || null
         };
       }) : []
     }));
@@ -7134,6 +7141,7 @@ app.get('/api/latest-transactions-by-customer', async (req, res) => {
         ti.product_id,
         ti.quantity,
         ti.price as item_price,
+        ti.license_message,
         p.title as product_title,
         p.image as product_image
       FROM RankedTransactions rt
@@ -7183,7 +7191,8 @@ app.get('/api/latest-transactions-by-customer', async (req, res) => {
           title: row.product_title,
           image: row.product_image,
           quantity: row.quantity,
-          price: parseFloat(row.item_price)
+          price: parseFloat(row.item_price),
+          license_message: row.license_message || null
         });
       }
     });
