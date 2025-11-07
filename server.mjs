@@ -1477,6 +1477,7 @@ app.post('/purchase', authenticateToken, async (req, res) => {
       );
       
       if (configRows.length === 0 || !configRows[0].wichx_api) {
+        await connection.rollback();
         return res.status(400).json({
           success: false,
           message: 'wichx_api not configured for this customer'
@@ -1503,6 +1504,7 @@ app.post('/purchase', authenticateToken, async (req, res) => {
         );
         
         if (!wichxResponse.data.success) {
+          await connection.rollback();
           return res.status(400).json({
             success: false,
             message: wichxResponse.data.message || 'Failed to purchase from wichxshop'
@@ -1511,15 +1513,36 @@ app.post('/purchase', authenticateToken, async (req, res) => {
         
         // Extract keys from response
         const wichxData = wichxResponse.data.data;
-        wichxOrderId = wichxData.id;
-        wichxKeys = wichxData.key ? wichxData.key.split('<sp>') : [];
+        if (!wichxData) {
+          await connection.rollback();
+          return res.status(400).json({
+            success: false,
+            message: 'Invalid response from wichxshop API - no data received'
+          });
+        }
         
-        // If single key (not array), convert to array
-        if (typeof wichxKeys === 'string') {
-          wichxKeys = [wichxKeys];
+        wichxOrderId = wichxData.id || null;
+        if (wichxData.key) {
+          wichxKeys = wichxData.key.split('<sp>');
+          // Ensure we have enough keys for the quantity requested
+          if (wichxKeys.length < quantity) {
+            console.warn(`Warning: Received ${wichxKeys.length} keys but requested ${quantity}`);
+          }
+        } else {
+          wichxKeys = [];
+        }
+        
+        // Validate that we have at least one key
+        if (wichxKeys.length === 0) {
+          await connection.rollback();
+          return res.status(400).json({
+            success: false,
+            message: 'No license keys received from wichxshop API'
+          });
         }
         
       } catch (wichxError) {
+        await connection.rollback();
         console.error('Wichxshop API error:', wichxError);
         
         if (wichxError.response) {
@@ -1538,9 +1561,10 @@ app.post('/purchase', authenticateToken, async (req, res) => {
         });
       }
     } else {
-      // Original logic for products without wichx_id
+      // Original logic for products without wichx_id - use local product_stock
       // Check if enough stock is available
       if (product.stock < quantity) {
+        await connection.rollback();
         return res.status(400).json({
           success: false,
           message: 'Insufficient stock available'
@@ -1548,17 +1572,21 @@ app.post('/purchase', authenticateToken, async (req, res) => {
       }
 
       // Get available product_stock (unsold items)
-      const [availableStock] = await connection.execute(
-        `SELECT id, license_key FROM product_stock WHERE product_id = ? AND sold = 0 LIMIT ${quantity}`,
-        [product_id]
+      // Note: LIMIT cannot use placeholder in some MySQL versions, so we use the value directly
+      const [stockResults] = await connection.execute(
+        `SELECT id, license_key FROM product_stock WHERE product_id = ? AND customer_id = ? AND sold = 0 LIMIT ${parseInt(quantity)}`,
+        [product_id, req.customer_id]
       );
 
-      if (availableStock.length < quantity) {
+      if (stockResults.length < quantity) {
+        await connection.rollback();
         return res.status(400).json({
           success: false,
           message: 'สินค้าไม่พร้อมสำหรับซื้อ'
         });
       }
+      
+      availableStock = stockResults;
     }
 
     // Get user's current money
@@ -1607,10 +1635,16 @@ app.post('/purchase', authenticateToken, async (req, res) => {
     // Create transaction items and update product_stock
     const transactionItems = [];
     
-    if (product.wichx_id && wichxKeys) {
+    if (product.wichx_id && wichxKeys && wichxKeys.length > 0) {
       // For wichx products, use keys from API response
       for (let i = 0; i < quantity; i++) {
-        const licenseKey = wichxKeys[i] || '';
+        const licenseKey = wichxKeys[i];
+        
+        // If no more keys available, break
+        if (!licenseKey) {
+          console.warn(`Warning: Not enough keys from wichxshop. Requested: ${quantity}, Available: ${i}`);
+          break;
+        }
         
         // Truncate license key if it's too long for license_message field (varchar(50))
         const licenseMessage = licenseKey.length > 50 ? licenseKey.substring(0, 50) : licenseKey;
@@ -1629,13 +1663,29 @@ app.post('/purchase', authenticateToken, async (req, res) => {
         });
       }
     } else {
-      // Original logic for local products
+      // Original logic for local products - use product_stock
+      if (!availableStock || availableStock.length === 0) {
+        await connection.rollback();
+        return res.status(400).json({
+          success: false,
+          message: 'No stock available for this product'
+        });
+      }
+      
       for (let i = 0; i < quantity; i++) {
+        if (!availableStock[i]) {
+          await connection.rollback();
+          return res.status(400).json({
+            success: false,
+            message: `Not enough stock items available. Requested: ${quantity}, Available: ${i}`
+          });
+        }
+        
         const stockItem = availableStock[i];
         
-        // Create transaction item
+        // Create transaction item with license_id from product_stock (no license_message for normal products)
         const [itemResult] = await connection.execute(
-          'INSERT INTO transaction_items (customer_id, bill_number, transaction_id, product_id, quantity, price, license_id) VALUES (?, ?, ?, ?, 1, ?, ?)',
+          'INSERT INTO transaction_items (customer_id, bill_number, transaction_id, product_id, quantity, price, license_id, license_message) VALUES (?, ?, ?, ?, 1, ?, ?, NULL)',
           [req.customer_id, billNumber, transactionId, product_id, discountedPrice, stockItem.id]
         );
 
@@ -1661,13 +1711,13 @@ app.post('/purchase', authenticateToken, async (req, res) => {
     // Update product stock count by counting unsold items (only for non-wichx products)
     if (!product.wichx_id) {
       const [stockCount] = await connection.execute(
-        'SELECT COUNT(*) as available_stock FROM product_stock WHERE product_id = ? AND sold = 0',
-        [product_id]
+        'SELECT COUNT(*) as available_stock FROM product_stock WHERE product_id = ? AND customer_id = ? AND sold = 0',
+        [product_id, req.customer_id]
       );
       
       await connection.execute(
-        'UPDATE products SET stock = ? WHERE id = ?',
-        [stockCount[0].available_stock, product_id]
+        'UPDATE products SET stock = ? WHERE id = ? AND customer_id = ?',
+        [stockCount[0].available_stock, product_id, req.customer_id]
       );
     }
 
