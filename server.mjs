@@ -757,7 +757,7 @@ app.get('/get-web-config', async (req, res) => {
        banner2_link, banner3_link, navigation_banner_1, navigation_link_1,
        navigation_banner_2, navigation_link_2, navigation_banner_3, navigation_link_3,
        navigation_banner_4, navigation_link_4, background_image, footer_image, load_logo, 
-       footer_logo, ad_banner, bank_account_name, bank_account_number, bank_account_name_thai, bank_account_tax, api, created_at, updated_at 
+       footer_logo, ad_banner, bank_account_name, bank_account_number, bank_account_name_thai, bank_account_tax, api, wichx_api, created_at, updated_at 
        FROM config WHERE customer_id = ? ORDER BY id LIMIT 1`,
       [req.customer_id]
     );
@@ -806,6 +806,7 @@ app.get('/get-web-config', async (req, res) => {
         bank_account_name_thai: config.bank_account_name_thai,
         bank_account_tax: config.bank_account_tax,
         api: config.api,
+        wichx_api: config.wichx_api,
         created_at: config.created_at,
         updated_at: config.updated_at
       }
@@ -866,7 +867,8 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
       bank_account_number,
       bank_account_name_thai,
       bank_account_tax,
-      api
+      api,
+      wichx_api
     } = req.body;
 
     // Check if config exists for this customer
@@ -1007,6 +1009,10 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
       updateFields.push('api = ?');
       updateValues.push(api);
     }
+    if (wichx_api !== undefined) {
+      updateFields.push('wichx_api = ?');
+      updateValues.push(wichx_api);
+    }
 
     if (updateFields.length === 0) {
       return res.status(400).json({
@@ -1038,7 +1044,7 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
        banner2_link, banner3_link, navigation_banner_1, navigation_link_1,
        navigation_banner_2, navigation_link_2, navigation_banner_3, navigation_link_3,
        navigation_banner_4, navigation_link_4, background_image, footer_image, load_logo, 
-       footer_logo, ad_banner, bank_account_name, bank_account_number, bank_account_name_thai, bank_account_tax, api, created_at, updated_at 
+       footer_logo, ad_banner, bank_account_name, bank_account_number, bank_account_name_thai, bank_account_tax, api, wichx_api, created_at, updated_at 
        FROM config WHERE customer_id = ?`,
       [req.customer_id]
     );
@@ -1080,6 +1086,7 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
         bank_account_name_thai: updatedConfig.bank_account_name_thai,
         bank_account_tax: updatedConfig.bank_account_tax,
         api: updatedConfig.api,
+        wichx_api: updatedConfig.wichx_api,
         created_at: updatedConfig.created_at,
         updated_at: updatedConfig.updated_at
       }
@@ -1292,7 +1299,7 @@ app.get('/categories/:categoryId/products', async (req, res) => {
         id, category_id, title, subtitle, price, reseller_price, stock, 
         duration, image, download_link, isSpecial, featured, isActive, 
         isWarrenty, warrenty_text, primary_color, secondary_color, 
-        created_at, priority, discount_percent
+        created_at, priority, discount_percent, wichx_id
       FROM products 
       WHERE category_id = ? AND customer_id = ? AND isActive = 1 
       ORDER BY priority DESC, title ASC`,
@@ -1359,7 +1366,7 @@ app.get('/products/:productId', async (req, res) => {
         p.id, p.category_id, p.title, p.subtitle, p.price, p.reseller_price, p.stock, 
         p.duration, p.image, p.download_link, p.isSpecial, p.featured, p.isActive, 
         p.isWarrenty, p.warrenty_text, p.primary_color, p.secondary_color, 
-        p.created_at, p.priority, p.discount_percent,
+        p.created_at, p.priority, p.discount_percent, p.wichx_id,
         c.title as category_title, c.category as category_slug
       FROM products p
       LEFT JOIN categories c ON p.category_id = c.id
@@ -1442,9 +1449,9 @@ app.post('/purchase', authenticateToken, async (req, res) => {
       });
     }
 
-    // Get product details
+    // Get product details including wichx_id
     const [products] = await connection.execute(
-      'SELECT id, title, price, stock, discount_percent FROM products WHERE id = ? AND isActive = 1',
+      'SELECT id, title, price, stock, discount_percent, wichx_id FROM products WHERE id = ? AND isActive = 1',
       [product_id]
     );
 
@@ -1457,25 +1464,101 @@ app.post('/purchase', authenticateToken, async (req, res) => {
 
     const product = products[0];
 
-    // Check if enough stock is available
-    if (product.stock < quantity) {
-      return res.status(400).json({
-        success: false,
-        message: 'Insufficient stock available'
-      });
-    }
+    // Check if product has wichx_id - if yes, use wichxshop API
+    let wichxKeys = null;
+    let wichxOrderId = null;
+    let availableStock = [];
+    
+    if (product.wichx_id) {
+      // Get wichx_api from config
+      const [configRows] = await connection.execute(
+        'SELECT wichx_api FROM config WHERE customer_id = ? ORDER BY id ASC LIMIT 1',
+        [req.customer_id]
+      );
+      
+      if (configRows.length === 0 || !configRows[0].wichx_api) {
+        return res.status(400).json({
+          success: false,
+          message: 'wichx_api not configured for this customer'
+        });
+      }
+      
+      const wichxApiKey = configRows[0].wichx_api;
+      
+      try {
+        // Call wichxshop API to buy product
+        const wichxResponse = await axios.post(
+          'https://wichxshop.com/api/v1/store/buy',
+          {
+            productId: product.wichx_id,
+            quantity: quantity
+          },
+          {
+            headers: {
+              'x-api-key': wichxApiKey,
+              'Content-Type': 'application/json'
+            },
+            timeout: 30000
+          }
+        );
+        
+        if (!wichxResponse.data.success) {
+          return res.status(400).json({
+            success: false,
+            message: wichxResponse.data.message || 'Failed to purchase from wichxshop'
+          });
+        }
+        
+        // Extract keys from response
+        const wichxData = wichxResponse.data.data;
+        wichxOrderId = wichxData.id;
+        wichxKeys = wichxData.key ? wichxData.key.split('<sp>') : [];
+        
+        // If single key (not array), convert to array
+        if (typeof wichxKeys === 'string') {
+          wichxKeys = [wichxKeys];
+        }
+        
+      } catch (wichxError) {
+        console.error('Wichxshop API error:', wichxError);
+        
+        if (wichxError.response) {
+          const errorMessage = wichxError.response.data?.message || 'Error from wichxshop API';
+          return res.status(wichxError.response.status || 400).json({
+            success: false,
+            message: errorMessage,
+            error: wichxError.response.data
+          });
+        }
+        
+        return res.status(500).json({
+          success: false,
+          message: 'เกิดข้อผิดพลาดในการเชื่อมต่อกับ wichxshop API',
+          error: wichxError.message
+        });
+      }
+    } else {
+      // Original logic for products without wichx_id
+      // Check if enough stock is available
+      if (product.stock < quantity) {
+        return res.status(400).json({
+          success: false,
+          message: 'Insufficient stock available'
+        });
+      }
 
-    // Get available product_stock (unsold items)
-    const [availableStock] = await connection.execute(
-      `SELECT id, license_key FROM product_stock WHERE product_id = ? AND sold = 0 LIMIT ${quantity}`,
-      [product_id]
-    );
+      // Get available product_stock (unsold items)
+      const [availableStock] = await connection.execute(
+        `SELECT id, license_key FROM product_stock WHERE product_id = ? AND sold = 0 LIMIT ${quantity}`,
+        [product_id]
+      );
 
-    if (availableStock.length < quantity) {
-      return res.status(400).json({
-        success: false,
-        message: 'สินค้าไม่พร้อมสำหรับซื้อ'
-      });
+      if (availableStock.length < quantity) {
+        return res.status(400).json({
+          success: false,
+          message: 'สินค้าไม่พร้อมสำหรับซื้อ'
+        });
+      }
     }
 
     // Get user's current money
@@ -1523,25 +1606,46 @@ app.post('/purchase', authenticateToken, async (req, res) => {
 
     // Create transaction items and update product_stock
     const transactionItems = [];
-    for (let i = 0; i < quantity; i++) {
-      const stockItem = availableStock[i];
-      
-      // Create transaction item
-      const [itemResult] = await connection.execute(
-        'INSERT INTO transaction_items (customer_id, bill_number, transaction_id, product_id, quantity, price, license_id) VALUES (?, ?, ?, ?, 1, ?, ?)',
-        [req.customer_id, billNumber, transactionId, product_id, discountedPrice, stockItem.id]
-      );
+    
+    if (product.wichx_id && wichxKeys) {
+      // For wichx products, use keys from API response
+      for (let i = 0; i < quantity; i++) {
+        const licenseKey = wichxKeys[i] || '';
+        
+        // Create transaction item without license_id (since it's from external API)
+        const [itemResult] = await connection.execute(
+          'INSERT INTO transaction_items (customer_id, bill_number, transaction_id, product_id, quantity, price, license_id) VALUES (?, ?, ?, ?, 1, ?, NULL)',
+          [req.customer_id, billNumber, transactionId, product_id, discountedPrice]
+        );
 
-      // Mark stock as sold
-      await connection.execute(
-        'UPDATE product_stock SET sold = 1 WHERE id = ?',
-        [stockItem.id]
-      );
+        transactionItems.push({
+          id: itemResult.insertId,
+          license_key: licenseKey,
+          wichx_order_id: wichxOrderId
+        });
+      }
+    } else {
+      // Original logic for local products
+      for (let i = 0; i < quantity; i++) {
+        const stockItem = availableStock[i];
+        
+        // Create transaction item
+        const [itemResult] = await connection.execute(
+          'INSERT INTO transaction_items (customer_id, bill_number, transaction_id, product_id, quantity, price, license_id) VALUES (?, ?, ?, ?, 1, ?, ?)',
+          [req.customer_id, billNumber, transactionId, product_id, discountedPrice, stockItem.id]
+        );
 
-      transactionItems.push({
-        id: itemResult.insertId,
-        license_key: stockItem.license_key
-      });
+        // Mark stock as sold
+        await connection.execute(
+          'UPDATE product_stock SET sold = 1 WHERE id = ?',
+          [stockItem.id]
+        );
+
+        transactionItems.push({
+          id: itemResult.insertId,
+          license_key: stockItem.license_key
+        });
+      }
     }
 
     // Deduct money from user
@@ -1550,16 +1654,18 @@ app.post('/purchase', authenticateToken, async (req, res) => {
       [totalPrice, userId]
     );
 
-    // Update product stock count by counting unsold items
-    const [stockCount] = await connection.execute(
-      'SELECT COUNT(*) as available_stock FROM product_stock WHERE product_id = ? AND sold = 0',
-      [product_id]
-    );
-    
-    await connection.execute(
-      'UPDATE products SET stock = ? WHERE id = ?',
-      [stockCount[0].available_stock, product_id]
-    );
+    // Update product stock count by counting unsold items (only for non-wichx products)
+    if (!product.wichx_id) {
+      const [stockCount] = await connection.execute(
+        'SELECT COUNT(*) as available_stock FROM product_stock WHERE product_id = ? AND sold = 0',
+        [product_id]
+      );
+      
+      await connection.execute(
+        'UPDATE products SET stock = ? WHERE id = ?',
+        [stockCount[0].available_stock, product_id]
+      );
+    }
 
     await connection.commit();
 
@@ -1655,7 +1761,7 @@ app.post('/purchase', authenticateToken, async (req, res) => {
       }
     }
 
-    res.json({
+    const responseData = {
       success: true,
       message: 'Purchase completed successfully',
       transaction: {
@@ -1678,7 +1784,17 @@ app.post('/purchase', authenticateToken, async (req, res) => {
         discount_applied: totalDiscount,
         total_paid: totalPrice
       }
-    });
+    };
+    
+    // Add wichx_order_id if product was purchased from wichxshop
+    if (product.wichx_id && wichxOrderId) {
+      responseData.wichx_order = {
+        order_id: wichxOrderId,
+        product_id: product.wichx_id
+      };
+    }
+    
+    res.json(responseData);
 
   } catch (error) {
     await connection.rollback();
@@ -1742,7 +1858,7 @@ app.get('/products', async (req, res) => {
         p.id, p.category_id, p.title, p.subtitle, p.price, p.reseller_price, p.stock, 
         p.duration, p.image, p.download_link, p.isSpecial, p.featured, p.isActive, 
         p.isWarrenty, p.warrenty_text, p.primary_color, p.secondary_color, 
-        p.created_at, p.priority, p.discount_percent,
+        p.created_at, p.priority, p.discount_percent, p.wichx_id,
         c.title as category_title, c.category as category_slug
       FROM products p
       LEFT JOIN categories c ON p.category_id = c.id
@@ -2591,7 +2707,7 @@ app.get('/admin/products', authenticateToken, requirePermission('can_edit_produc
         p.id, p.category_id, p.title, p.subtitle, p.price, p.reseller_price, 
         p.stock, p.duration, p.image, p.download_link, p.isSpecial, p.featured, 
         p.isActive, p.isWarrenty, p.warrenty_text, p.primary_color, p.secondary_color, 
-        p.created_at, p.priority, p.discount_percent, p.customer_id,
+        p.created_at, p.priority, p.discount_percent, p.wichx_id, p.customer_id,
         c.title as category_title, c.category as category_slug
       FROM products p
       LEFT JOIN categories c ON p.category_id = c.id
@@ -2736,7 +2852,7 @@ app.get('/admin/products/:productId', authenticateToken, requirePermission('can_
         p.id, p.category_id, p.title, p.subtitle, p.price, p.reseller_price, 
         p.stock, p.duration, p.image, p.download_link, p.isSpecial, p.featured, 
         p.isActive, p.isWarrenty, p.warrenty_text, p.primary_color, p.secondary_color, 
-        p.created_at, p.priority, p.discount_percent, p.customer_id,
+        p.created_at, p.priority, p.discount_percent, p.wichx_id, p.customer_id,
         c.title as category_title, c.category as category_slug, c.parent_id as category_parent_id
       FROM products p
       LEFT JOIN categories c ON p.category_id = c.id
@@ -2829,7 +2945,7 @@ app.get('/admin/categories/:categoryId/products', authenticateToken, requirePerm
         p.id, p.category_id, p.title, p.subtitle, p.price, p.reseller_price, 
         p.stock, p.duration, p.image, p.download_link, p.isSpecial, p.featured, 
         p.isActive, p.isWarrenty, p.warrenty_text, p.primary_color, p.secondary_color, 
-        p.created_at, p.priority, p.discount_percent,
+        p.created_at, p.priority, p.discount_percent, p.wichx_id,
         c.title as category_title, c.category as category_slug
       FROM products p
       LEFT JOIN categories c ON p.category_id = c.id
@@ -2907,7 +3023,8 @@ app.post('/admin/products', authenticateToken, requirePermission('can_edit_produ
       primary_color,
       secondary_color,
       priority,
-      discount_percent
+      discount_percent,
+      wichx_id
     } = req.body;
 
     // Validate required fields
@@ -2937,14 +3054,14 @@ app.post('/admin/products', authenticateToken, requirePermission('can_edit_produ
         customer_id, category_id, title, subtitle, price, reseller_price, 
         stock, duration, image, download_link, isSpecial, featured, 
         isWarrenty, warrenty_text, primary_color, secondary_color, 
-        priority, discount_percent
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        priority, discount_percent, wichx_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         req.customer_id, category_id, title, subtitle || null, price, 
         reseller_price || null, stock || 0, duration || null, image || null, 
         download_link || null, isSpecial || 0, featured || 0, isWarrenty || 0, 
         warrenty_text || null, primary_color || null, secondary_color || null, 
-        priority || 0, discount_percent || 0
+        priority || 0, discount_percent || 0, wichx_id || null
       ]
     );
 
@@ -2992,7 +3109,8 @@ app.put('/admin/products/:productId', authenticateToken, requirePermission('can_
       secondary_color,
       priority,
       discount_percent,
-      isActive
+      isActive,
+      wichx_id
     } = req.body;
 
     // Validate product ID
@@ -3106,6 +3224,10 @@ app.put('/admin/products/:productId', authenticateToken, requirePermission('can_
     if (isActive !== undefined) {
       updateFields.push('isActive = ?');
       updateValues.push(isActive);
+    }
+    if (wichx_id !== undefined) {
+      updateFields.push('wichx_id = ?');
+      updateValues.push(wichx_id === '' ? null : wichx_id);
     }
 
     if (updateFields.length === 0) {
@@ -6831,6 +6953,7 @@ app.post('/api/external/products/import', authenticateToken, requirePermission('
         const stock = parseInt(extProduct.stock) || 0;
         const discountValue = extProduct.discountValue ? parseFloat(extProduct.discountValue) : 0;
         const discountType = extProduct.discountType || 'NONE';
+        const wichx_id = extProduct.id ? String(extProduct.id) : null;
         
         // Calculate discount_percent based on discountType
         let discount_percent = 0;
@@ -6869,9 +6992,10 @@ app.post('/api/external/products/import', authenticateToken, requirePermission('
                 stock = ?, 
                 discount_percent = ?,
                 subtitle = ?,
+                wichx_id = ?,
                 updated_at = CURRENT_TIMESTAMP
               WHERE id = ? AND customer_id = ?`,
-              [price, image, stock, discount_percent, subtitle, existingProducts[0].id, req.customer_id]
+              [price, image, stock, discount_percent, subtitle, wichx_id, existingProducts[0].id, req.customer_id]
             );
             importedProducts.push({
               id: existingProducts[0].id,
@@ -6893,8 +7017,8 @@ app.post('/api/external/products/import', authenticateToken, requirePermission('
             customer_id, category_id, title, subtitle, price, reseller_price, 
             stock, duration, image, download_link, isSpecial, featured, 
             isWarrenty, warrenty_text, primary_color, secondary_color, 
-            priority, discount_percent
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            priority, discount_percent, wichx_id
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             req.customer_id, 
             category_id, 
@@ -6913,7 +7037,8 @@ app.post('/api/external/products/import', authenticateToken, requirePermission('
             null, // primary_color
             null, // secondary_color
             0, // priority
-            discount_percent
+            discount_percent,
+            wichx_id
           ]
         );
 
