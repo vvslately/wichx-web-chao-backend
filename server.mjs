@@ -1299,7 +1299,7 @@ app.get('/categories/:categoryId/products', async (req, res) => {
         id, category_id, title, subtitle, price, reseller_price, stock, 
         duration, image, download_link, isSpecial, featured, isActive, 
         isWarrenty, warrenty_text, primary_color, secondary_color, 
-        created_at, priority, discount_percent, wichx_id
+        created_at, priority, discount_percent, wichx_id, download_toggle
       FROM products 
       WHERE category_id = ? AND customer_id = ? AND isActive = 1 
       ORDER BY priority DESC, title ASC`,
@@ -1366,7 +1366,7 @@ app.get('/products/:productId', async (req, res) => {
         p.id, p.category_id, p.title, p.subtitle, p.price, p.reseller_price, p.stock, 
         p.duration, p.image, p.download_link, p.isSpecial, p.featured, p.isActive, 
         p.isWarrenty, p.warrenty_text, p.primary_color, p.secondary_color, 
-        p.created_at, p.priority, p.discount_percent, p.wichx_id,
+        p.created_at, p.priority, p.discount_percent, p.wichx_id, p.download_toggle,
         c.title as category_title, c.category as category_slug
       FROM products p
       LEFT JOIN categories c ON p.category_id = c.id
@@ -1408,6 +1408,7 @@ app.get('/products/:productId', async (req, res) => {
         duration: product.duration,
         image: product.image,
         download_link: product.download_link,
+        download_toggle: product.download_toggle,
         isSpecial: product.isSpecial,
         featured: product.featured,
         isActive: product.isActive,
@@ -1912,7 +1913,7 @@ app.get('/products', async (req, res) => {
         p.id, p.category_id, p.title, p.subtitle, p.price, p.reseller_price, p.stock, 
         p.duration, p.image, p.download_link, p.isSpecial, p.featured, p.isActive, 
         p.isWarrenty, p.warrenty_text, p.primary_color, p.secondary_color, 
-        p.created_at, p.priority, p.discount_percent, p.wichx_id,
+        p.created_at, p.priority, p.discount_percent, p.wichx_id, p.download_toggle,
         c.title as category_title, c.category as category_slug
       FROM products p
       LEFT JOIN categories c ON p.category_id = c.id
@@ -1965,7 +1966,7 @@ app.get('/my-transactions', authenticateToken, async (req, res) => {
         t.id, t.bill_number, t.total_price, t.created_at,
         ti.id as item_id, ti.product_id, ti.quantity, ti.price as item_price,
         ti.license_id, ti.license_message, ps.license_key,
-        p.title as product_title, p.image as product_image, p.download_link as product_download_link
+        p.title as product_title, p.image as product_image, p.download_link as product_download_link, p.download_toggle as product_download_toggle
       FROM transactions t
       LEFT JOIN transaction_items ti ON t.id = ti.transaction_id
       LEFT JOIN product_stock ps ON ti.license_id = ps.id
@@ -1996,6 +1997,7 @@ app.get('/my-transactions', authenticateToken, async (req, res) => {
           product_title: row.product_title,
           product_image: row.product_image,
           product_download_link: row.product_download_link || null,
+          product_download_toggle: row.product_download_toggle !== undefined ? row.product_download_toggle : 1,
           quantity: row.quantity,
           price: row.item_price,
           license_key: row.license_key || null,
@@ -2763,7 +2765,7 @@ app.get('/admin/products', authenticateToken, requirePermission('can_edit_produc
         p.id, p.category_id, p.title, p.subtitle, p.price, p.reseller_price, 
         p.stock, p.duration, p.image, p.download_link, p.isSpecial, p.featured, 
         p.isActive, p.isWarrenty, p.warrenty_text, p.primary_color, p.secondary_color, 
-        p.created_at, p.priority, p.discount_percent, p.wichx_id, p.customer_id,
+        p.created_at, p.priority, p.discount_percent, p.wichx_id, p.download_toggle, p.customer_id,
         c.title as category_title, c.category as category_slug
       FROM products p
       LEFT JOIN categories c ON p.category_id = c.id
@@ -2908,7 +2910,7 @@ app.get('/admin/products/:productId', authenticateToken, requirePermission('can_
         p.id, p.category_id, p.title, p.subtitle, p.price, p.reseller_price, 
         p.stock, p.duration, p.image, p.download_link, p.isSpecial, p.featured, 
         p.isActive, p.isWarrenty, p.warrenty_text, p.primary_color, p.secondary_color, 
-        p.created_at, p.priority, p.discount_percent, p.wichx_id, p.customer_id,
+        p.created_at, p.priority, p.discount_percent, p.wichx_id, p.download_toggle, p.customer_id,
         c.title as category_title, c.category as category_slug, c.parent_id as category_parent_id
       FROM products p
       LEFT JOIN categories c ON p.category_id = c.id
@@ -3001,7 +3003,7 @@ app.get('/admin/categories/:categoryId/products', authenticateToken, requirePerm
         p.id, p.category_id, p.title, p.subtitle, p.price, p.reseller_price, 
         p.stock, p.duration, p.image, p.download_link, p.isSpecial, p.featured, 
         p.isActive, p.isWarrenty, p.warrenty_text, p.primary_color, p.secondary_color, 
-        p.created_at, p.priority, p.discount_percent, p.wichx_id,
+        p.created_at, p.priority, p.discount_percent, p.wichx_id, p.download_toggle,
         c.title as category_title, c.category as category_slug
       FROM products p
       LEFT JOIN categories c ON p.category_id = c.id
@@ -3080,7 +3082,8 @@ app.post('/admin/products', authenticateToken, requirePermission('can_edit_produ
       secondary_color,
       priority,
       discount_percent,
-      wichx_id
+      wichx_id,
+      download_toggle
     } = req.body;
 
     // Validate required fields
@@ -3114,14 +3117,14 @@ app.post('/admin/products', authenticateToken, requirePermission('can_edit_produ
         customer_id, category_id, title, subtitle, price, reseller_price, 
         stock, duration, image, download_link, isSpecial, featured, 
         isWarrenty, warrenty_text, primary_color, secondary_color, 
-        priority, discount_percent, wichx_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        priority, discount_percent, wichx_id, download_toggle
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         req.customer_id, category_id, title, subtitle || null, processedPrice, 
         processedResellerPrice, stock || 0, duration || null, image || null, 
         download_link || null, isSpecial || 0, featured || 0, isWarrenty || 0, 
         warrenty_text || null, primary_color || null, secondary_color || null, 
-        priority || 0, discount_percent || 0, wichx_id || null
+        priority || 0, discount_percent || 0, wichx_id || null, download_toggle !== undefined ? download_toggle : 1
       ]
     );
 
@@ -3170,7 +3173,8 @@ app.put('/admin/products/:productId', authenticateToken, requirePermission('can_
       priority,
       discount_percent,
       isActive,
-      wichx_id
+      wichx_id,
+      download_toggle
     } = req.body;
 
     // Validate product ID
@@ -3290,6 +3294,10 @@ app.put('/admin/products/:productId', authenticateToken, requirePermission('can_
     if (wichx_id !== undefined) {
       updateFields.push('wichx_id = ?');
       updateValues.push(wichx_id === '' ? null : wichx_id);
+    }
+    if (download_toggle !== undefined) {
+      updateFields.push('download_toggle = ?');
+      updateValues.push(download_toggle);
     }
 
     if (updateFields.length === 0) {
@@ -7057,6 +7065,7 @@ app.post('/api/external/products/import', authenticateToken, requirePermission('
                 discount_percent = ?,
                 subtitle = ?,
                 wichx_id = ?,
+                download_toggle = 1,
                 updated_at = CURRENT_TIMESTAMP
               WHERE id = ? AND customer_id = ?`,
               [price, image, stock, discount_percent, subtitle, wichx_id, existingProducts[0].id, req.customer_id]
@@ -7081,8 +7090,8 @@ app.post('/api/external/products/import', authenticateToken, requirePermission('
             customer_id, category_id, title, subtitle, price, reseller_price, 
             stock, duration, image, download_link, isSpecial, featured, 
             isWarrenty, warrenty_text, primary_color, secondary_color, 
-            priority, discount_percent, wichx_id
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            priority, discount_percent, wichx_id, download_toggle
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             req.customer_id, 
             category_id, 
@@ -7102,7 +7111,8 @@ app.post('/api/external/products/import', authenticateToken, requirePermission('
             null, // secondary_color
             0, // priority
             discount_percent,
-            wichx_id
+            wichx_id,
+            1 // download_toggle (default to 1 for imported products)
           ]
         );
 
@@ -7200,7 +7210,9 @@ app.get('/api/latest-transactions-by-customer', async (req, res) => {
         ti.price as item_price,
         ti.license_message,
         p.title as product_title,
-        p.image as product_image
+        p.image as product_image,
+        p.download_link as product_download_link,
+        p.download_toggle as product_download_toggle
       FROM RankedTransactions rt
       LEFT JOIN transaction_items ti ON rt.id = ti.transaction_id
       LEFT JOIN products p ON ti.product_id = p.id AND p.customer_id = ?
@@ -7247,6 +7259,8 @@ app.get('/api/latest-transactions-by-customer', async (req, res) => {
           product_id: row.product_id,
           title: row.product_title,
           image: row.product_image,
+          download_link: row.product_download_link || null,
+          download_toggle: row.product_download_toggle !== undefined ? row.product_download_toggle : 1,
           quantity: row.quantity,
           price: parseFloat(row.item_price),
           license_message: row.license_message || null
