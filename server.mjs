@@ -7037,17 +7037,10 @@ app.post('/api/external/products/import', authenticateToken, requirePermission('
         const price = parseFloat(extProduct.price) || 0;
         const image = extProduct.image || null;
         const stock = parseInt(extProduct.stock) || 0;
-        const discountValue = extProduct.discountValue ? parseFloat(extProduct.discountValue) : 0;
-        const discountType = extProduct.discountType || 'NONE';
         const wichx_id = extProduct.id ? String(extProduct.id) : null;
         
-        // Calculate discount_percent based on discountType
-        let discount_percent = 0;
-        if (discountType === 'FIXED_AMOUNT' && price > 0 && discountValue > 0) {
-          discount_percent = Math.round((discountValue / price) * 100);
-        } else if (discountType !== 'NONE' && discountValue > 0 && price > 0) {
-          discount_percent = Math.round((discountValue / price) * 100);
-        }
+        // Don't import discount - set to 0
+        const discount_percent = 0;
 
         // Build subtitle from additional info
         let subtitle = null;
@@ -7070,19 +7063,18 @@ app.post('/api/external/products/import', authenticateToken, requirePermission('
 
         if (existingProducts.length > 0) {
           if (overwrite) {
-            // Update existing product
+            // Update existing product (without discount and download_link)
             await connection.execute(
               `UPDATE products SET 
                 price = ?, 
                 image = ?, 
-                stock = ?, 
-                discount_percent = ?,
+                stock = ?,
                 subtitle = ?,
                 wichx_id = ?,
                 download_toggle = 1,
                 updated_at = CURRENT_TIMESTAMP
               WHERE id = ? AND customer_id = ?`,
-              [price, image, stock, discount_percent, subtitle, wichx_id, existingProducts[0].id, req.customer_id]
+              [price, image, stock, subtitle, wichx_id, existingProducts[0].id, req.customer_id]
             );
             importedProducts.push({
               id: existingProducts[0].id,
@@ -7098,7 +7090,7 @@ app.post('/api/external/products/import', authenticateToken, requirePermission('
           continue;
         }
 
-        // Insert new product
+        // Insert new product (without discount and download_link)
         const [result] = await connection.execute(
           `INSERT INTO products (
             customer_id, category_id, title, subtitle, price, reseller_price, 
@@ -7116,7 +7108,7 @@ app.post('/api/external/products/import', authenticateToken, requirePermission('
             stock, 
             null, // duration
             image, 
-            extProduct.slug || null, // download_link
+            null, // download_link (not imported from wichx)
             0, // isSpecial
             0, // featured
             0, // isWarrenty
@@ -7124,7 +7116,7 @@ app.post('/api/external/products/import', authenticateToken, requirePermission('
             null, // primary_color
             null, // secondary_color
             0, // priority
-            discount_percent,
+            0, // discount_percent (not imported from wichx)
             wichx_id,
             1 // download_toggle (default to 1 for imported products)
           ]
