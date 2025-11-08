@@ -757,7 +757,7 @@ app.get('/get-web-config', async (req, res) => {
        banner2_link, banner3_link, navigation_banner_1, navigation_link_1,
        navigation_banner_2, navigation_link_2, navigation_banner_3, navigation_link_3,
        navigation_banner_4, navigation_link_4, background_image, footer_image, load_logo, 
-       footer_logo, ad_banner, bank_account_name, bank_account_number, bank_account_name_thai, bank_account_tax, api, wichx_api, created_at, updated_at 
+       footer_logo, ad_banner, bank_account_name, bank_account_number, bank_account_name_thai, bank_account_tax, api, wichx_api, line_link, facebook_link, created_at, updated_at 
        FROM config WHERE customer_id = ? ORDER BY id LIMIT 1`,
       [req.customer_id]
     );
@@ -807,6 +807,8 @@ app.get('/get-web-config', async (req, res) => {
         bank_account_tax: config.bank_account_tax,
         api: config.api,
         wichx_api: config.wichx_api,
+        line_link: config.line_link,
+        facebook_link: config.facebook_link,
         created_at: config.created_at,
         updated_at: config.updated_at
       }
@@ -868,7 +870,9 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
       bank_account_name_thai,
       bank_account_tax,
       api,
-      wichx_api
+      wichx_api,
+      line_link,
+      facebook_link
     } = req.body;
 
     // Check if config exists for this customer
@@ -1013,6 +1017,14 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
       updateFields.push('wichx_api = ?');
       updateValues.push(wichx_api);
     }
+    if (line_link !== undefined) {
+      updateFields.push('line_link = ?');
+      updateValues.push(line_link);
+    }
+    if (facebook_link !== undefined) {
+      updateFields.push('facebook_link = ?');
+      updateValues.push(facebook_link);
+    }
 
     if (updateFields.length === 0) {
       return res.status(400).json({
@@ -1044,7 +1056,7 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
        banner2_link, banner3_link, navigation_banner_1, navigation_link_1,
        navigation_banner_2, navigation_link_2, navigation_banner_3, navigation_link_3,
        navigation_banner_4, navigation_link_4, background_image, footer_image, load_logo, 
-       footer_logo, ad_banner, bank_account_name, bank_account_number, bank_account_name_thai, bank_account_tax, api, wichx_api, created_at, updated_at 
+       footer_logo, ad_banner, bank_account_name, bank_account_number, bank_account_name_thai, bank_account_tax, api, wichx_api, line_link, facebook_link, created_at, updated_at 
        FROM config WHERE customer_id = ?`,
       [req.customer_id]
     );
@@ -1087,6 +1099,8 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
         bank_account_tax: updatedConfig.bank_account_tax,
         api: updatedConfig.api,
         wichx_api: updatedConfig.wichx_api,
+        line_link: updatedConfig.line_link,
+        facebook_link: updatedConfig.facebook_link,
         created_at: updatedConfig.created_at,
         updated_at: updatedConfig.updated_at
       }
