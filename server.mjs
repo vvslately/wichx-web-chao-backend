@@ -510,7 +510,7 @@ app.get('/my-profile', authenticateToken, async (req, res) => {
     }
 
     const [users] = await pool.execute(
-      'SELECT id, fullname, email, money, points, role, created_at FROM users WHERE id = ? AND customer_id = ?',
+      'SELECT id, fullname, email, money, points, role, pin_code, created_at FROM users WHERE id = ? AND customer_id = ?',
       [req.user.id, req.customer_id]
     );
 
@@ -533,6 +533,7 @@ app.get('/my-profile', authenticateToken, async (req, res) => {
         money: user.money,
         points: user.points,
         role: user.role,
+        pin_code: user.pin_code,
         created_at: user.created_at
       }
     });
@@ -5276,6 +5277,7 @@ app.get('/admin/users', authenticateToken, requirePermission('can_edit_users'), 
         u.money,
         u.points,
         u.discord_id,
+        u.pin_code,
         u.created_at,
         r.can_edit_categories,
         r.can_edit_products,
@@ -5306,6 +5308,7 @@ app.get('/admin/users', authenticateToken, requirePermission('can_edit_users'), 
           money: user.money,
           points: user.points,
           discord_id: user.discord_id,
+          pin_code: user.pin_code,
           created_at: user.created_at,
           permissions: {
             can_edit_categories: Boolean(user.can_edit_categories),
@@ -5341,7 +5344,7 @@ app.get('/admin/users', authenticateToken, requirePermission('can_edit_users'), 
 // Create new user (Admin only)
 app.post('/admin/users', authenticateToken, requirePermission('can_edit_users'), async (req, res) => {
   try {
-    const { fullname, email, password, role = 'member', money = 0, points = 0, discord_id } = req.body;
+    const { fullname, email, password, role = 'member', money = 0, points = 0, discord_id, pin_code } = req.body;
 
     // Validate required fields
     if (!fullname || !email || !password) {
@@ -5392,8 +5395,8 @@ app.post('/admin/users', authenticateToken, requirePermission('can_edit_users'),
 
     // Insert new user
     const [result] = await pool.execute(
-      'INSERT INTO users (customer_id, fullname, email, password, role, money, points, discord_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-      [req.customer_id, fullname, email, hashedPassword, role, money, points, discord_id || null]
+      'INSERT INTO users (customer_id, fullname, email, password, role, money, points, discord_id, pin_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [req.customer_id, fullname, email, hashedPassword, role, money, points, discord_id || null, pin_code || null]
     );
 
     // Get the created user with role info
@@ -5406,6 +5409,7 @@ app.post('/admin/users', authenticateToken, requirePermission('can_edit_users'),
         u.money,
         u.points,
         u.discord_id,
+        u.pin_code,
         u.created_at,
         r.can_edit_categories,
         r.can_edit_products,
@@ -5434,6 +5438,7 @@ app.post('/admin/users', authenticateToken, requirePermission('can_edit_users'),
           money: newUser[0].money,
           points: newUser[0].points,
           discord_id: newUser[0].discord_id,
+          pin_code: newUser[0].pin_code,
           created_at: newUser[0].created_at,
           permissions: {
             can_edit_categories: Boolean(newUser[0].can_edit_categories),
@@ -5464,7 +5469,7 @@ app.post('/admin/users', authenticateToken, requirePermission('can_edit_users'),
 app.put('/admin/users/:id', authenticateToken, requirePermission('can_edit_users'), async (req, res) => {
   try {
     const { id } = req.params;
-    const { fullname, email, password, role, money, points, discord_id } = req.body;
+    const { fullname, email, password, role, money, points, discord_id, pin_code } = req.body;
 
     // Check if user exists
     const [existingUser] = await pool.execute(
@@ -5558,6 +5563,11 @@ app.put('/admin/users/:id', authenticateToken, requirePermission('can_edit_users
       updateValues.push(discord_id || null);
     }
 
+    if (pin_code !== undefined) {
+      updateFields.push('pin_code = ?');
+      updateValues.push(pin_code || null);
+    }
+
     if (updateFields.length === 0) {
       return res.status(400).json({
         success: false,
@@ -5582,6 +5592,7 @@ app.put('/admin/users/:id', authenticateToken, requirePermission('can_edit_users
         u.money,
         u.points,
         u.discord_id,
+        u.pin_code,
         u.created_at,
         r.can_edit_categories,
         r.can_edit_products,
@@ -5610,6 +5621,7 @@ app.put('/admin/users/:id', authenticateToken, requirePermission('can_edit_users
           money: updatedUser[0].money,
           points: updatedUser[0].points,
           discord_id: updatedUser[0].discord_id,
+          pin_code: updatedUser[0].pin_code,
           created_at: updatedUser[0].created_at,
           permissions: {
             can_edit_categories: Boolean(updatedUser[0].can_edit_categories),
@@ -5778,15 +5790,6 @@ app.post('/admin/roles', authenticateToken, requirePermission('can_edit_users'),
       });
     }
 
-    // Validate role name format (alphanumeric and underscore only)
-    const roleNameRegex = /^[a-zA-Z0-9_]+$/;
-    if (!roleNameRegex.test(rank_name)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Role name can only contain letters, numbers, and underscores'
-      });
-    }
-
     // Check if role already exists
     const [existingRole] = await pool.execute(
       'SELECT id FROM roles WHERE rank_name = ? AND customer_id = ?',
@@ -5916,15 +5919,6 @@ app.put('/admin/roles/:id', authenticateToken, requirePermission('can_edit_users
     const updateValues = [];
 
     if (rank_name !== undefined) {
-      // Validate role name format
-      const roleNameRegex = /^[a-zA-Z0-9_]+$/;
-      if (!roleNameRegex.test(rank_name)) {
-        return res.status(400).json({
-          success: false,
-          message: 'Role name can only contain letters, numbers, and underscores'
-        });
-      }
-
       // Check if role name is already taken by another role
       if (rank_name !== existingRole[0].rank_name) {
         const [nameCheck] = await pool.execute(
