@@ -1787,7 +1787,7 @@ app.post('/purchase', authenticateToken, async (req, res) => {
         }
         
         // Truncate license key if it's too long for license_message field (varchar(50))
-        const licenseMessage = licenseKey.length > 50 ? licenseKey.substring(0, 50) : licenseKey;
+        const licenseMessage = licenseKey.length > 50 ? licenseKey.substring(0, 10000) : licenseKey;
         
         // Create transaction item with license_message from wichxshop API
         const [itemResult] = await connection.execute(
