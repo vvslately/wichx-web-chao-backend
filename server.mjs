@@ -6644,8 +6644,8 @@ app.post('/api/slip', authenticateToken, async (req, res) => {
         [
           resellUser.user_id,
           'withdraw',
-          processingFee,
-          `Slip processing fee for customer ${req.customer_id}, user ${req.user.id}, ref ${ref}`,
+          -processingFee,
+          `Slip processing fee deducted for customer ${req.customer_id}, user ${req.user.id}, ref ${ref}`,
           'success'
         ]
       );
