@@ -609,10 +609,32 @@ app.put('/my-password', authenticateToken, async (req, res) => {
     const saltRounds = 10;
     const hashedNewPassword = await bcrypt.hash(new_password, saltRounds);
 
-    await pool.execute(
-      'UPDATE users SET password = ? WHERE id = ? AND customer_id = ?',
-      [hashedNewPassword, req.user.id, req.customer_id]
-    );
+    const connection = await pool.getConnection();
+
+    try {
+      await connection.beginTransaction();
+
+      await connection.execute(
+        'UPDATE users SET password = ? WHERE id = ? AND customer_id = ?',
+        [hashedNewPassword, req.user.id, req.customer_id]
+      );
+
+      await connection.execute(
+        `UPDATE auth_sites
+         SET admin_password = ?
+         WHERE customer_id = ? AND admin_user = (
+           SELECT fullname FROM users WHERE id = ? AND customer_id = ?
+         )`,
+        [hashedNewPassword, req.customer_id, req.user.id, req.customer_id]
+      );
+
+      await connection.commit();
+    } catch (txError) {
+      await connection.rollback();
+      throw txError;
+    } finally {
+      connection.release();
+    }
 
     res.json({
       success: true,
