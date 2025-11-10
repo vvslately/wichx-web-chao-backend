@@ -548,6 +548,87 @@ app.get('/my-profile', authenticateToken, async (req, res) => {
   }
 });
 
+// Change own password (authenticated users)
+app.put('/my-password', authenticateToken, async (req, res) => {
+  try {
+    // Verify customer context matches authenticated token
+    if (req.user.customer_id !== req.customer_id) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied - customer mismatch'
+      });
+    }
+
+    const { current_password, new_password } = req.body;
+
+    if (!current_password || !new_password) {
+      return res.status(400).json({
+        success: false,
+        message: 'กรุณากรอกรหัสผ่านเดิมและรหัสผ่านใหม่'
+      });
+    }
+
+    if (new_password.length < 6) {
+      return res.status(400).json({
+        success: false,
+        message: 'รหัสผ่านใหม่ต้องมีความยาวอย่างน้อย 6 ตัวอักษร'
+      });
+    }
+
+    const [users] = await pool.execute(
+      'SELECT password FROM users WHERE id = ? AND customer_id = ? LIMIT 1',
+      [req.user.id, req.customer_id]
+    );
+
+    if (users.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'ไม่พบข้อมูลผู้ใช้'
+      });
+    }
+
+    const user = users[0];
+
+    const isCurrentPasswordValid = await bcrypt.compare(current_password, user.password);
+
+    if (!isCurrentPasswordValid) {
+      return res.status(400).json({
+        success: false,
+        message: 'รหัสผ่านเดิมไม่ถูกต้อง'
+      });
+    }
+
+    const isSamePassword = await bcrypt.compare(new_password, user.password);
+    if (isSamePassword) {
+      return res.status(400).json({
+        success: false,
+        message: 'รหัสผ่านใหม่ต้องแตกต่างจากรหัสผ่านเดิม'
+      });
+    }
+
+    const saltRounds = 10;
+    const hashedNewPassword = await bcrypt.hash(new_password, saltRounds);
+
+    await pool.execute(
+      'UPDATE users SET password = ? WHERE id = ? AND customer_id = ?',
+      [hashedNewPassword, req.user.id, req.customer_id]
+    );
+
+    res.json({
+      success: true,
+      message: 'เปลี่ยนรหัสผ่านสำเร็จ'
+    });
+
+  } catch (error) {
+    console.error('Change password error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'เกิดข้อผิดพลาดในการเปลี่ยนรหัสผ่าน',
+      error: error.message
+    });
+  }
+});
+
 // Logout endpoint (client-side token removal)
 app.post('/logout', authenticateToken, (req, res) => {
   res.json({
@@ -6461,13 +6542,14 @@ app.post('/api/slip', authenticateToken, async (req, res) => {
 
     const resellUser = resellUsers[0];
     const currentBalance = parseFloat(resellUser.balance) || 0;
+    const processingFee = 0.20;
 
-    if (currentBalance < 0.20) {
+    if (currentBalance < processingFee) {
       return res.status(400).json({
         success: false,
-        message: `เงินในบัญชี resell_users ไม่เพียงพอ (ปัจจุบัน: ${currentBalance.toFixed(2)} บาท, ต้องการ: 0.20 บาท)`,
+        message: `เงินในบัญชี resell_users ไม่เพียงพอ (ปัจจุบัน: ${currentBalance.toFixed(2)} บาท, ต้องการ: ${processingFee.toFixed(2)} บาท)`,
         current_balance: currentBalance,
-        required_balance: 0.20
+        required_balance: processingFee
       });
     }
 
@@ -6524,15 +6606,27 @@ app.post('/api/slip', authenticateToken, async (req, res) => {
         throw new Error('ไม่สามารถอัปเดตเงินผู้ใช้ได้');
       }
 
-      // Deduct 0.20 from resell_users (already validated above)
-      const newResellBalance = Math.max(0, currentBalance - 0.20);
+      // Deduct processing fee from resell_users (already validated above)
+      const newResellBalance = Math.max(0, Math.round((currentBalance - processingFee) * 100) / 100);
       
       await connection.execute(
         'UPDATE resell_users SET balance = ? WHERE user_id = ? AND api = ?',
         [newResellBalance, resellUser.user_id, config.api]
       );
 
-      console.log(`Deducted 0.20 from resell_user ${resellUser.user_id}, balance: ${currentBalance} -> ${newResellBalance}`);
+      console.log(`Deducted processing fee ${processingFee} from resell_user ${resellUser.user_id}, balance: ${currentBalance} -> ${newResellBalance}`);
+
+      // Record deduction in resell_transactions
+      await connection.execute(
+        'INSERT INTO resell_transactions (user_id, type, amount, description, status) VALUES (?, ?, ?, ?, ?)',
+        [
+          resellUser.user_id,
+          'withdraw',
+          processingFee,
+          `Slip processing fee for customer ${req.customer_id}, user ${req.user.id}, ref ${ref}`,
+          'success'
+        ]
+      );
 
       // Get new balance
       const [userResult] = await connection.execute(
