@@ -6339,6 +6339,28 @@ app.post('/api/slip', authenticateToken, async (req, res) => {
       });
     }
 
+    // Fetch config and validate API key before calling external service
+    const [configRows] = await pool.execute(
+      'SELECT bank_account_name, bank_account_number, bank_account_name_thai, bank_account_tax, api FROM config WHERE customer_id = ? ORDER BY id ASC LIMIT 1',
+      [req.customer_id]
+    );
+
+    if (configRows.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'ไม่พบข้อมูลการตั้งค่าธนาคาร'
+      });
+    }
+
+    const config = configRows[0];
+
+    if (!config.api || config.api.trim() === '') {
+      return res.status(400).json({
+        success: false,
+        message: 'ไม่ได้ตั้งค่า API key กรุณาตั้งค่า API key ก่อนอัพโหลดสลิป'
+      });
+    }
+
     console.log('Sending to API with clean image data length:', cleanImg.length);
 
     // Try different approaches for API call
@@ -6347,11 +6369,13 @@ app.post('/api/slip', authenticateToken, async (req, res) => {
     try {
       // First try: Send as base64 string
       slipResponse = await axios.post('https://slip-c.oiioioiiioooioio.download/api/slip', {
-        img: cleanImg
+        img: cleanImg,
+        api_key: config.api
       }, {
         timeout: 30000,
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'x-api-key': config.api
         }
       });
     } catch (error) {
@@ -6359,11 +6383,13 @@ app.post('/api/slip', authenticateToken, async (req, res) => {
       
       // Second try: Send with data URL format
       slipResponse = await axios.post('https://slip-c.oiioioiiioooioio.download/api/slip', {
-        img: img
+        img: img,
+        api_key: config.api
       }, {
         timeout: 30000,
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'x-api-key': config.api
         }
       });
     }
@@ -6403,67 +6429,6 @@ app.post('/api/slip', authenticateToken, async (req, res) => {
         transaction_ref: ref
       });
     }
-
-    // Get config to check receiver_name and bank_account_number and tax and api
-    const [configs] = await pool.execute(
-      'SELECT bank_account_name, bank_account_number, bank_account_name_thai, bank_account_tax, api FROM config WHERE customer_id = ?',
-      [req.customer_id]
-    );
-
-    if (configs.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'ไม่พบข้อมูลการตั้งค่าธนาคาร'
-      });
-    }
-
-    const config = configs[0];
-    
-    // Priority 1: Check bank account number first
-    const idMatch = config.bank_account_number && 
-      (receiver_id.includes(config.bank_account_number) ||
-       config.bank_account_number.includes(receiver_id));
-    
-    // Priority 2: Check English name if number doesn't match
-    const englishNameMatch = !idMatch && config.bank_account_name && 
-      (receiver_name.toLowerCase().includes(config.bank_account_name.toLowerCase()) ||
-       config.bank_account_name.toLowerCase().includes(receiver_name.toLowerCase()));
-    
-    // Priority 3: Check Thai name if number and English name don't match
-    const thaiNameMatch = !idMatch && !englishNameMatch && config.bank_account_name_thai && 
-      (receiver_name.toLowerCase().includes(config.bank_account_name_thai.toLowerCase()) ||
-       config.bank_account_name_thai.toLowerCase().includes(receiver_name.toLowerCase()));
-    
-    console.log('Validation checks:', {
-      config_number: config.bank_account_number,
-      slip_id: receiver_id,
-      id_match: idMatch,
-      config_english_name: config.bank_account_name,
-      slip_name: receiver_name,
-      english_name_match: englishNameMatch,
-      config_thai_name: config.bank_account_name_thai,
-      thai_name_match: thaiNameMatch
-    });
-    
-    // Check if any validation passes
-    if (!idMatch && !englishNameMatch && !thaiNameMatch) {
-      console.log('Validation failed - no match found');
-      return res.status(400).json({
-        success: false,
-        message: 'ข้อมูลผู้รับเงินไม่ตรงกับบัญชีธนาคารที่ตั้งค่าไว้',
-        expected: {
-          number: config.bank_account_number,
-          english_name: config.bank_account_name,
-          thai_name: config.bank_account_name_thai
-        },
-        received: {
-          name: receiver_name,
-          id: receiver_id
-        }
-      });
-    }
-    
-    console.log('Validation passed - proceeding with topup');
 
     // Validate amount
     if (!amount || amount <= 0) {
