@@ -6581,13 +6581,23 @@ app.post('/api/slip', authenticateToken, async (req, res) => {
       api_key: config.api
     });
 
-    // Calculate tenant tax and net credit amount
-    const taxRate = parseFloat(config.bank_account_tax || 0);
-    const computedTaxAmount = Math.max(0, Math.round((amount * (isNaN(taxRate) ? 0 : taxRate / 100)) * 100) / 100);
+    // Determine tax rate (prefer resell_config.tax, fallback to config.bank_account_tax)
+    const [resellConfigRows] = await pool.execute(
+      'SELECT tax FROM resell_config ORDER BY id DESC LIMIT 1'
+    );
+
+    const effectiveTax = resellConfigRows.length > 0 && resellConfigRows[0].tax !== null
+      ? parseFloat(resellConfigRows[0].tax)
+      : parseFloat(config.bank_account_tax || 0);
+
+    const taxValue = isNaN(effectiveTax) ? 0 : Math.max(0, effectiveTax);
+
+    // Calculate tenant tax and net credit amount (fixed amount, not percentage)
+    const computedTaxAmount = Math.min(amount, Math.round(taxValue * 100) / 100);
     const creditedAmount = Math.max(0, Math.round((amount - computedTaxAmount) * 100) / 100);
 
     console.log('Tax calculation:', {
-      tax_rate_percent: isNaN(taxRate) ? 0 : taxRate,
+      tax_value: taxValue,
       gross_amount: amount,
       tax_amount: computedTaxAmount,
       credited_amount: creditedAmount
@@ -6602,7 +6612,7 @@ app.post('/api/slip', authenticateToken, async (req, res) => {
         customer_id: req.customer_id,
         user_id: req.user.id,
         amount_gross: amount,
-        tax_rate_percent: isNaN(taxRate) ? 0 : taxRate,
+        tax_value: taxValue,
         tax_amount: computedTaxAmount,
         amount_credited: creditedAmount,
         ref: ref
@@ -6668,7 +6678,7 @@ app.post('/api/slip', authenticateToken, async (req, res) => {
         data: {
           amount: creditedAmount,
           amount_gross: amount,
-          tax_rate_percent: isNaN(taxRate) ? 0 : taxRate,
+          tax_value: taxValue,
           tax_amount: computedTaxAmount,
           new_balance: newBalance,
           topup_id: topupResult.insertId,
