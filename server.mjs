@@ -1686,7 +1686,9 @@ app.post('/purchase', authenticateToken, async (req, res) => {
         console.error('Wichxshop API error:', wichxError);
         
         if (wichxError.response) {
-          const errorMessage = wichxError.response.data?.message || 'Error from wichxshop API';
+          const errorMessage = (wichxError.response.data && wichxError.response.data.message) 
+            ? wichxError.response.data.message 
+            : 'Error from wichxshop API';
           return res.status(wichxError.response.status || 400).json({
             success: false,
             message: errorMessage,
