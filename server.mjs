@@ -13,7 +13,7 @@ const JWT_SECRET = '32670cc39ca9333bedb30406cc22c4bc';
 
 // Database configuration
 const dbConfig = {
-  host: '210.246.215.19',
+  host: '210.246.215.168',
   port: 3306,
   user: 'okzcuseradmin',
   password: 'StrongPass123!',
