@@ -2800,8 +2800,8 @@ app.post('/redeem-angpao', authenticateToken, async (req, res) => {
         status: err.response.status,
         statusText: err.response.statusText,
         data: err.response.data,
-        url: err.config?.url,
-        user_id: req.user?.id,
+        url: err.config ? err.config.url : undefined,
+        user_id: req.user ? req.user.id : undefined,
         customer_id: req.customer_id,
         campaign_id: campaignId
       });
@@ -2825,7 +2825,7 @@ app.post('/redeem-angpao', authenticateToken, async (req, res) => {
         error: errorMessage,
         details: {
           status: err.response.status,
-          message: err.response.data?.message || err.response.statusText,
+          message: err.response.data && err.response.data.message ? err.response.data.message : err.response.statusText,
           campaign_id: campaignId
         }
       });
@@ -2861,7 +2861,7 @@ app.post('/redeem-angpao', authenticateToken, async (req, res) => {
       details: {
         message: err.message,
         campaign_id: campaignId,
-        user_id: req.user?.id,
+        user_id: req.user ? req.user.id : undefined,
         customer_id: req.customer_id
       }
     });
@@ -5391,7 +5391,7 @@ app.get('/admin/users', authenticateToken, requirePermission('can_edit_users'), 
       limitSafe,
       offsetSafe,
       paramCount: searchParams.length,
-      placeholderCount: (searchConditions + ' ORDER BY u.created_at DESC').match(/\?/g)?.length || 0
+      placeholderCount: ((searchConditions + ' ORDER BY u.created_at DESC').match(/\?/g) || []).length || 0
     });
     
     const [users] = await pool.execute(
@@ -6704,7 +6704,7 @@ app.post('/api/slip', authenticateToken, async (req, res) => {
       return res.status(500).json({
         success: false,
         message: 'ไม่สามารถประมวลผลสลิปได้',
-        error: error.response.data?.message || 'API error'
+        error: (error.response.data && error.response.data.message) ? error.response.data.message : 'API error'
       });
     }
 
