@@ -861,7 +861,7 @@ app.get('/get-web-config', async (req, res) => {
        banner2_link, banner3_link, navigation_banner_1, navigation_link_1,
        navigation_banner_2, navigation_link_2, navigation_banner_3, navigation_link_3,
        navigation_banner_4, navigation_link_4, background_image, footer_image, load_logo, 
-       footer_logo, ad_banner, bank_account_name, bank_account_number, bank_account_name_thai, bank_account_tax, api, wichx_api, line_link, facebook_link, bank_name, truemoney_toggle, uploadslip_toggle, created_at, updated_at 
+       footer_logo, ad_banner, bank_account_name, bank_account_number, bank_account_name_thai, bank_account_tax, api, wichx_api, line_link, facebook_link, bank_name, truemoney_toggle, uploadslip_toggle, annouce_toggle, created_at, updated_at 
        FROM config WHERE customer_id = ? ORDER BY id LIMIT 1`,
       [req.customer_id]
     );
@@ -916,6 +916,7 @@ app.get('/get-web-config', async (req, res) => {
         bank_name: config.bank_name,
         truemoney_toggle: config.truemoney_toggle,
         uploadslip_toggle: config.uploadslip_toggle,
+        annouce_toggle: config.annouce_toggle,
         created_at: config.created_at,
         updated_at: config.updated_at
       }
@@ -930,9 +931,6 @@ app.get('/get-web-config', async (req, res) => {
     });
   }
 });
-
-
-
 
 
 // Update web config endpoint (excluding theme)
@@ -982,7 +980,8 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
       facebook_link,
       bank_name,
       truemoney_toggle,
-      uploadslip_toggle
+      uploadslip_toggle,
+      annouce_toggle
     } = req.body;
 
     // Check if config exists for this customer
@@ -1147,6 +1146,10 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
       updateFields.push('uploadslip_toggle = ?');
       updateValues.push(uploadslip_toggle);
     }
+    if (annouce_toggle !== undefined) {
+      updateFields.push('annouce_toggle = ?');
+      updateValues.push(annouce_toggle);
+    }
 
     if (updateFields.length === 0) {
       return res.status(400).json({
@@ -1178,7 +1181,7 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
        banner2_link, banner3_link, navigation_banner_1, navigation_link_1,
        navigation_banner_2, navigation_link_2, navigation_banner_3, navigation_link_3,
        navigation_banner_4, navigation_link_4, background_image, footer_image, load_logo, 
-       footer_logo, ad_banner, bank_account_name, bank_account_number, bank_account_name_thai, bank_account_tax, api, wichx_api, line_link, facebook_link, bank_name, truemoney_toggle, uploadslip_toggle, created_at, updated_at 
+       footer_logo, ad_banner, bank_account_name, bank_account_number, bank_account_name_thai, bank_account_tax, api, wichx_api, line_link, facebook_link, bank_name, truemoney_toggle, uploadslip_toggle, annouce_toggle, created_at, updated_at 
        FROM config WHERE customer_id = ?`,
       [req.customer_id]
     );
@@ -1226,6 +1229,7 @@ app.put('/update-web-config', authenticateToken, requirePermission('can_manage_s
         bank_name: updatedConfig.bank_name,
         truemoney_toggle: updatedConfig.truemoney_toggle,
         uploadslip_toggle: updatedConfig.uploadslip_toggle,
+        annouce_toggle: updatedConfig.annouce_toggle,
         created_at: updatedConfig.created_at,
         updated_at: updatedConfig.updated_at
       }
@@ -2753,6 +2757,85 @@ app.post('/redeem-angpao', authenticateToken, async (req, res) => {
         await connection.commit();
 
         console.log(`Topup successful: Customer ${req.customer_id}, User ${req.user.id}, Amount: ${amount}, New Balance: ${newMoney}`);
+
+        // Get Discord webhook URL, site name, and site logo from config
+        const [configRows] = await connection.execute(
+          'SELECT discord_webhook, site_name, site_logo FROM config WHERE customer_id = ? ORDER BY id ASC LIMIT 1',
+          [req.customer_id]
+        );
+        const discordWebhookUrl = configRows.length > 0 ? configRows[0].discord_webhook : null;
+        const siteName = configRows.length > 0 ? configRows[0].site_name : 'Backend System';
+        const siteLogo = configRows.length > 0 ? configRows[0].site_logo : 'https://img2.pic.in.th/pic/logodiscordf124e71a99293428.png';
+
+        // Send Discord webhook if configured
+        if (discordWebhookUrl) {
+          try {
+            const [userInfo] = await connection.execute(
+              'SELECT fullname, email FROM users WHERE id = ?',
+              [req.user.id]
+            );
+            const user = userInfo[0] || {};
+
+            const embed = {
+              title: "💰 การเติมเงินสำเร็จ",
+              color: 0x00ff00,
+              fields: [
+                {
+                  name: "👤 ผู้ใช้",
+                  value: user.fullname || user.email || "ไม่ระบุ",
+                  inline: true
+                },
+                {
+                  name: "💰 จำนวนเงิน",
+                  value: `${amount.toFixed(2)} บาท`,
+                  inline: true
+                },
+                {
+                  name: "💳 เงินคงเหลือ",
+                  value: `${newMoney.toFixed(2)} บาท`,
+                  inline: true
+                },
+                {
+                  name: "📋 วิธีเติมเงิน",
+                  value: "บัตรของขวัญ (Gift Card)",
+                  inline: true
+                },
+                {
+                  name: "🔖 Transaction ID",
+                  value: `#${topupResult.insertId}`,
+                  inline: true
+                },
+                {
+                  name: "🔗 Campaign ID",
+                  value: campaignId,
+                  inline: false
+                }
+              ],
+              timestamp: new Date().toISOString(),
+              footer: {
+                text: siteName
+              },
+              thumbnail: {
+                url: siteLogo
+              }
+            };
+
+            const webhookPayload = {
+              embeds: [embed]
+            };
+
+            await axios.post(discordWebhookUrl, webhookPayload, {
+              headers: {
+                'Content-Type': 'application/json',
+              }
+            });
+
+            console.log('Discord webhook sent successfully for topup');
+          } catch (webhookError) {
+            console.error('Discord webhook error:', webhookError);
+            // Don't fail the topup if webhook fails
+          }
+        }
 
         res.json({
           success: true,
@@ -6671,6 +6754,95 @@ app.post('/api/slip', authenticateToken, async (req, res) => {
       await connection.commit();
 
       console.log(`Slip topup successful: Customer ${req.customer_id}, User ${req.user.id}, Gross: ${amount}, Tax: ${computedTaxAmount}, Credited: ${creditedAmount}, Ref: ${ref}, New Balance: ${newBalance}`);
+
+      // Get Discord webhook URL, site name, and site logo from config
+      const [configRows] = await connection.execute(
+        'SELECT discord_webhook, site_name, site_logo FROM config WHERE customer_id = ? ORDER BY id ASC LIMIT 1',
+        [req.customer_id]
+      );
+      const discordWebhookUrl = configRows.length > 0 ? configRows[0].discord_webhook : null;
+      const siteName = configRows.length > 0 ? configRows[0].site_name : 'Backend System';
+      const siteLogo = configRows.length > 0 ? configRows[0].site_logo : 'https://img2.pic.in.th/pic/logodiscordf124e71a99293428.png';
+
+      // Send Discord webhook if configured
+      if (discordWebhookUrl) {
+        try {
+          const [userInfo] = await connection.execute(
+            'SELECT fullname, email FROM users WHERE id = ?',
+            [req.user.id]
+          );
+          const user = userInfo[0] || {};
+
+          const embed = {
+            title: "💰 การเติมเงินสำเร็จ",
+            color: 0x00ff00,
+            fields: [
+              {
+                name: "👤 ผู้ใช้",
+                value: user.fullname || user.email || "ไม่ระบุ",
+                inline: true
+              },
+              {
+                name: "💰 จำนวนเงิน (รวม)",
+                value: `${amount.toFixed(2)} บาท`,
+                inline: true
+              },
+              {
+                name: "💵 จำนวนเงินที่ได้รับ",
+                value: `${creditedAmount.toFixed(2)} บาท`,
+                inline: true
+              },
+              {
+                name: "📊 ภาษี",
+                value: `${computedTaxAmount.toFixed(2)} บาท`,
+                inline: true
+              },
+              {
+                name: "💳 เงินคงเหลือ",
+                value: `${newBalance.toFixed(2)} บาท`,
+                inline: true
+              },
+              {
+                name: "📋 วิธีเติมเงิน",
+                value: "โอนเงินผ่านธนาคาร (Bank Transfer)",
+                inline: true
+              },
+              {
+                name: "🔖 Transaction ID",
+                value: `#${topupResult.insertId}`,
+                inline: true
+              },
+              {
+                name: "🔗 Transaction Ref",
+                value: ref,
+                inline: false
+              }
+            ],
+            timestamp: new Date().toISOString(),
+            footer: {
+              text: siteName
+            },
+            thumbnail: {
+              url: siteLogo
+            }
+          };
+
+          const webhookPayload = {
+            embeds: [embed]
+          };
+
+          await axios.post(discordWebhookUrl, webhookPayload, {
+            headers: {
+              'Content-Type': 'application/json',
+            }
+          });
+
+          console.log('Discord webhook sent successfully for slip topup');
+        } catch (webhookError) {
+          console.error('Discord webhook error:', webhookError);
+          // Don't fail the topup if webhook fails
+        }
+      }
 
       res.json({
         success: true,
