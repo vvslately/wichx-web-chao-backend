@@ -6647,7 +6647,18 @@ app.post('/api/slip', authenticateToken, async (req, res) => {
 
     const resellUser = resellUsers[0];
     const currentBalance = parseFloat(resellUser.balance) || 0;
-    const processingFee = 0.20;
+    
+    // Determine tax rate from resell_config.tax (prefer resell_config.tax, fallback to config.bank_account_tax)
+    const [resellConfigRows] = await pool.execute(
+      'SELECT tax FROM resell_config ORDER BY id DESC LIMIT 1'
+    );
+
+    const effectiveTax = resellConfigRows.length > 0 && resellConfigRows[0].tax !== null
+      ? parseFloat(resellConfigRows[0].tax)
+      : parseFloat(config.bank_account_tax || 0);
+
+    const taxValue = isNaN(effectiveTax) ? 0 : Math.max(0, effectiveTax);
+    const processingFee = taxValue;
 
     if (currentBalance < processingFee) {
       return res.status(400).json({
@@ -6663,17 +6674,6 @@ app.post('/api/slip', authenticateToken, async (req, res) => {
       current_balance: currentBalance,
       api_key: config.api
     });
-
-    // Determine tax rate (prefer resell_config.tax, fallback to config.bank_account_tax)
-    const [resellConfigRows] = await pool.execute(
-      'SELECT tax FROM resell_config ORDER BY id DESC LIMIT 1'
-    );
-
-    const effectiveTax = resellConfigRows.length > 0 && resellConfigRows[0].tax !== null
-      ? parseFloat(resellConfigRows[0].tax)
-      : parseFloat(config.bank_account_tax || 0);
-
-    const taxValue = isNaN(effectiveTax) ? 0 : Math.max(0, effectiveTax);
 
     // Calculate tenant tax and net credit amount (fixed amount, not percentage)
     const computedTaxAmount = Math.min(amount, Math.round(taxValue * 100) / 100);
